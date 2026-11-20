@@ -64,13 +64,13 @@ const plan = {
   },
 };
 
-/** Plan tab of a project (/projects/:id/plan) – the project owner only (checked in the service). */
+/** Plan tab of a project (/projects/:id/plan) – by the role's Project access for the Plan tab (checked in the service). */
 export default async function projectPlanRoutes(fastify) {
   const { db, authorize } = fastify;
   fastify.addHook('onRequest', fastify.authenticate);
   const view = authorize(SCREENS.PROJECTS, 'view');
 
-  fastify.get('/:id/plan', { schema: { tags, summary: 'Weekly plan by task group (project owner)', params, response: { 200: plan } }, preHandler: view }, (req) =>
+  fastify.get('/:id/plan', { schema: { tags, summary: 'Weekly plan by task group', params, response: { 200: plan } }, preHandler: view }, (req) =>
     service.getPlan(db, req.auth, req.params.id),
   );
   fastify.post(

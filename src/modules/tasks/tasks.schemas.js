@@ -217,6 +217,7 @@ export const templateProjectsSchema = {
           templateCount: { type: 'integer' },
           ownerId: nullableInt,
           peopleIds: { type: 'array', items: { type: 'integer' }, description: 'owner + members – who tasks can be assigned to' },
+          taskGroupIds: { type: 'array', items: { type: 'integer' }, description: 'the project task groups (Estimate tab); empty = the estimate is not set, no group' },
         },
       },
     },

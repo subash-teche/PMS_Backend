@@ -6,7 +6,7 @@ import { tabAccess } from '../projects/project-access.js';
 
 /*
  * Project Plan tab: the project's task groups planned per week, from the project start to its end.
- * Only the project owner sees and edits it. It is a plan only – no tasks or time entries are made.
+ * Who sees and edits it is the role's Project access for the Plan tab (Hidden / View / Edit). It is a plan only – no tasks or time entries are made.
  */
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -59,7 +59,7 @@ function needPlanTab(auth, level) {
   if (a === 'hidden' || (level === 'edit' && a !== 'edit')) throw forbidden(level === 'edit' ? 'Your role can only view the Plan tab' : 'Your role cannot see the Plan tab');
 }
 
-/** The project, for its owner only. */
+/** The project (access to the tab is checked by needPlanTab). */
 async function ownProject(db, auth, id) {
   const { rows } = await db.query(
     `SELECT p.id, p.owner_id, p.start_date::text AS start_date, p.end_date::text AS end_date, p.estimated_hours,
@@ -69,7 +69,6 @@ async function ownProject(db, auth, id) {
   );
   const p = rows[0];
   if (!p) throw notFound('Project');
-  if (p.owner_id !== auth.userId) throw forbidden('Only the project owner can see and change the plan');
   return p;
 }
 

@@ -278,6 +278,16 @@ async function projectPeople(db, projectIds) {
   return new Map(rows.map((r) => [r.id, { ownerId: r.owner_id, peopleIds: [...new Set([r.owner_id, ...r.member_ids.map(Number)])].filter(Boolean) }]));
 }
 
+/** The task groups of projects (their Estimate tab, with a share of the effort): a project task is made in one of them. → Map projectId → [task group id]; none = the estimate is not set */
+async function projectGroups(db, projectIds) {
+  if (!projectIds.length) return new Map();
+  const { rows } = await db.query(
+    `SELECT project_id, array_agg(DISTINCT task_group_id ORDER BY task_group_id)::int[] AS ids FROM project_effort_estimates WHERE project_id = ANY($1) AND effort_percentage > 0 GROUP BY project_id`,
+    [projectIds],
+  );
+  return new Map(rows.map((r) => [r.project_id, r.ids]));
+}
+
 export async function taskOptions(db, auth) {
   const projects = PROJECTS_SQL(auth);
   const [categories, projectRows, users] = await Promise.all([
@@ -295,9 +305,10 @@ export async function taskOptions(db, auth) {
       : db.query(`SELECT id, name, employee_code AS code FROM users WHERE id = $1`, [auth.userId]),
   ]);
   const people = await projectPeople(db, projectRows.rows.map((p) => p.id));
+  const groups = await projectGroups(db, projectRows.rows.map((p) => p.id));
   return {
     categories: categories.rows,
-    projects: projectRows.rows.map((p) => ({ ...p, ...(people.get(p.id) ?? { ownerId: null, peopleIds: [] }) })),
+    projects: projectRows.rows.map((p) => ({ ...p, ...(people.get(p.id) ?? { ownerId: null, peopleIds: [] }), taskGroupIds: groups.get(p.id) ?? [] })),
     users: users.rows,
     canAssignOthers: canAssignOthers(auth),
     canSeeAll: canSeeAll(auth),
@@ -364,6 +375,14 @@ async function validate(db, auth, v, before = null) {
   } else if (v.taskGroupId && v.taskGroupId !== before?.task_group_id) {
     const { rowCount } = await db.query(`SELECT 1 FROM task_groups WHERE id = $1`, [v.taskGroupId]);
     if (!rowCount) throw badRequest('Select a task group', [{ field: 'taskGroupId', message: 'does not exist' }]);
+  }
+
+  // a project task's group must be one of the project's task groups (its Estimate tab)
+  if (cat[0].is_project && v.taskGroupId && (v.taskGroupId !== before?.task_group_id || v.projectId !== before?.project_id)) {
+    const ids = (await projectGroups(db, [v.projectId])).get(v.projectId) ?? [];
+    if (!ids.includes(v.taskGroupId)) {
+      throw badRequest(ids.length ? "Select one of the project's task groups" : 'The project plan and estimate are not set', [{ field: 'taskGroupId', message: ids.length ? 'not a task group of the project' : 'the project estimate is not set' }]);
+    }
   }
 
   // the group must be one of the category's task groups (a category without groups takes any)
