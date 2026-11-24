@@ -7,7 +7,7 @@ import { badRequest, notFound } from '../../utils/errors.js';
  */
 
 /** SQL: `col` is a user the viewer (param `viewer`) was given in Task Master. */
-export const GRANTED = (col, viewer) => `${col} IN (SELECT ta.user_id FROM task_access ta WHERE ta.viewer_id = ${viewer})`;
+export const GRANTED = (col, viewer) => `${col} IN (SELECT ta.user_id FROM task_viewer_access ta WHERE ta.viewer_id = ${viewer})`;
 
 /** Every active user with the people they may see. */
 export async function listAccess(db) {
@@ -16,7 +16,7 @@ export async function listAccess(db) {
             COALESCE(array_agg(ta.user_id ORDER BY ta.user_id) FILTER (WHERE ta.user_id IS NOT NULL), '{}') AS user_ids
        FROM users u
        LEFT JOIN roles r ON r.id = u.role_id
-       LEFT JOIN task_access ta ON ta.viewer_id = u.id
+       LEFT JOIN task_viewer_access ta ON ta.viewer_id = u.id
       WHERE u.is_active
       GROUP BY u.id, r.name
       ORDER BY u.name`,
@@ -34,13 +34,13 @@ export async function saveAccess(db, auth, viewerId, userIds) {
     if (rows.length !== ids.length) throw badRequest('Some of the selected people do not exist', [{ field: 'userIds', message: 'unknown user' }]);
   }
   await db.tx(async (client) => {
-    await client.query(`DELETE FROM task_access WHERE viewer_id = $1 AND NOT (user_id = ANY($2))`, [viewerId, ids]);
+    await client.query(`DELETE FROM task_viewer_access WHERE viewer_id = $1 AND NOT (user_id = ANY($2))`, [viewerId, ids]);
     await client.query(
-      `INSERT INTO task_access (viewer_id, user_id, created_by) SELECT $1, x, $3 FROM unnest($2::bigint[]) x
+      `INSERT INTO task_viewer_access (viewer_id, user_id, created_by) SELECT $1, x, $3 FROM unnest($2::bigint[]) x
        ON CONFLICT (viewer_id, user_id) DO NOTHING`,
       [viewerId, ids, auth.userId],
     );
-    await writeAudit(client, { entity: 'task_access', entityId: viewerId, action: 'update', userId: auth.userId, message: `${viewer[0].name} can see ${ids.length} people` });
+    await writeAudit(client, { entity: 'task_viewer_access', entityId: viewerId, action: 'update', userId: auth.userId, message: `${viewer[0].name} can see ${ids.length} people` });
   });
   return (await listAccess(db)).find((u) => u.id === viewerId);
 }

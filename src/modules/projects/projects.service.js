@@ -76,37 +76,37 @@ const AUDIT_KEYS = [...Object.values(FIELDS).filter((c) => c !== 'stage_id'), 's
 const SELECT = `
   SELECT p.*, c.name AS customer_name, d.name AS division_name, t.name AS type_name,
          o.name AS owner_name, o.email AS owner_email, st.name AS stage_name,
-         (SELECT q.rate_per_hour FROM project_division_quote_rates q
+         (SELECT q.rate_per_hour FROM division_quote_rates q
            WHERE q.project_division_id = p.project_division_id AND q.currency = p.estimated_amount_currency) AS quote_rate,
          COALESCE(prog.progress, 0) AS progress,
          COALESCE(ts.logged_minutes, 0) AS logged_minutes,
          lc.comment AS last_comment, lc.created_at AS last_comment_at, lc.author AS last_comment_by,
-         (SELECT max(r.review_date) FROM project_reviews r
+         (SELECT max(r.review_date) FROM project_progress_updates r
            WHERE r.project_id = p.id
-             AND EXISTS (SELECT 1 FROM project_review_task_groups g WHERE g.project_review_id = r.id)) AS last_review_date
+             AND EXISTS (SELECT 1 FROM project_progress_update_groups g WHERE g.progress_update_id = r.id)) AS last_review_date
     FROM projects p
     JOIN project_divisions d ON d.id = p.project_division_id
     JOIN project_types t ON t.id = p.project_type_id
     JOIN users o ON o.id = p.owner_id
     LEFT JOIN customers c ON c.id = p.customer_id
-    LEFT JOIN lookups st ON st.id = p.stage_id
+    LEFT JOIN parameter_values st ON st.id = p.stage_id
     LEFT JOIN LATERAL (
       SELECT ROUND(SUM(e.effort_percentage * rtg.completion_percentage) / 100)::int AS progress
-        FROM project_reviews pr
-        JOIN project_review_task_groups rtg ON rtg.project_review_id = pr.id
-        JOIN project_task_group_estimates e ON e.project_id = p.id AND e.task_group_id = rtg.task_group_id
-       WHERE pr.id = (SELECT r.id FROM project_reviews r
+        FROM project_progress_updates pr
+        JOIN project_progress_update_groups rtg ON rtg.progress_update_id = pr.id
+        JOIN project_effort_estimates e ON e.project_id = p.id AND e.task_group_id = rtg.task_group_id
+       WHERE pr.id = (SELECT r.id FROM project_progress_updates r
                        WHERE r.project_id = p.id
-                         AND EXISTS (SELECT 1 FROM project_review_task_groups g WHERE g.project_review_id = r.id)
+                         AND EXISTS (SELECT 1 FROM project_progress_update_groups g WHERE g.progress_update_id = r.id)
                        ORDER BY r.review_date DESC, r.id DESC LIMIT 1)
     ) prog ON true
     LEFT JOIN LATERAL (
-      SELECT SUM(minutes)::int AS logged_minutes FROM timesheets WHERE project_id = p.id
+      SELECT SUM(x.minutes)::int AS logged_minutes FROM timesheets x JOIN tasks k ON k.id = x.task_id WHERE k.project_id = p.id
     ) ts ON true
     LEFT JOIN LATERAL (
       -- latest progress comment (Update tab)
       SELECT r.comment, r.created_at, u.name AS author
-        FROM project_reviews r LEFT JOIN users u ON u.id = r.created_by
+        FROM project_progress_updates r LEFT JOIN users u ON u.id = r.created_by
        WHERE r.project_id = p.id AND r.comment <> ''
        ORDER BY r.created_at DESC, r.id DESC LIMIT 1
     ) lc ON true`;
@@ -153,12 +153,12 @@ const toDto = (p) => ({
  *   team     – projects owned by / shared with anyone in the user's teams
  *   own      – projects the user owns or is a member of
  *   customer – projects of the user's customer (customer logins)
- *   vendor   – same as own (projects have no vendor link)
  */
 function applyDataScope(where, auth) {
   if (auth.isSuperAdmin || auth.role.dataScope === 'all') return;
   const me = auth.userId;
-  const ownOrMember = `(p.owner_id = $? OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $?))`;
+  // the owner, a member, or the person who created the project (who may have made it for someone else)
+  const ownOrMember = `(p.owner_id = $? OR p.created_by = $? OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $?))`;
 
   switch (auth.role.dataScope) {
     case 'customer':
@@ -175,10 +175,11 @@ function applyDataScope(where, auth) {
         me,
         me,
         me,
+        me,
       );
       break;
     default:
-      where.add(ownOrMember, me, me);
+      where.add(ownOrMember, me, me, me);
   }
 }
 
@@ -288,7 +289,7 @@ export async function projectSummary(db, auth) {
     db.query(
       `WITH ${scoped}, burn AS (
          SELECT p.id, p.title, o.name AS owner_name, p.estimated_hours,
-                COALESCE((SELECT SUM(t.minutes) FROM timesheets t WHERE t.project_id = p.id), 0) / 60.0 AS logged
+                COALESCE((SELECT SUM(t.minutes) FROM timesheets t JOIN tasks k ON k.id = t.task_id WHERE k.project_id = p.id), 0) / 60.0 AS logged
            FROM scoped p JOIN users o ON o.id = p.owner_id
           WHERE p.estimated_hours > 0 AND p.status <> 'cancelled')
        SELECT id, title, owner_name, ROUND(logged * 100 / estimated_hours)::int AS pct, count(*) OVER()::int AS total
@@ -300,7 +301,7 @@ export async function projectSummary(db, auth) {
       `WITH ${scoped}
        SELECT COALESCE(SUM(t.minutes), 0)::int AS total,
               COALESCE(SUM(t.minutes) FILTER (WHERE t.is_billable), 0)::int AS billable
-         FROM timesheets t JOIN scoped p ON p.id = t.project_id
+         FROM timesheets t JOIN tasks k ON k.id = t.task_id JOIN scoped p ON p.id = k.project_id
         WHERE t.work_date >= date_trunc('month', ${today})`,
       scope.params,
     ),
@@ -309,7 +310,7 @@ export async function projectSummary(db, auth) {
       `WITH ${scoped}
        SELECT d.day::date AS day, COALESCE(SUM(t.minutes), 0)::int AS minutes
          FROM generate_series(date_trunc('week', ${today}), date_trunc('week', ${today}) + interval '6 days', interval '1 day') AS d(day)
-         LEFT JOIN timesheets t ON t.work_date = d.day::date AND t.project_id IN (SELECT id FROM scoped)
+         LEFT JOIN timesheets t ON t.work_date = d.day::date AND t.task_id IN (SELECT k.id FROM tasks k WHERE k.project_id IN (SELECT id FROM scoped))
         GROUP BY d.day ORDER BY d.day`,
       scope.params,
     ),
@@ -317,7 +318,7 @@ export async function projectSummary(db, auth) {
     db.query(
       `WITH ${scoped}
        SELECT l.id, l.name, l.value AS status, count(p.id)::int AS n
-         FROM scoped p JOIN lookups l ON l.id = p.stage_id
+         FROM scoped p JOIN parameter_values l ON l.id = p.stage_id
         GROUP BY l.id, l.name, l.value, l.display_order
         ORDER BY l.display_order, l.name`,
       scope.params,
@@ -460,16 +461,16 @@ export async function getProject(db, auth, id) {
     // effort % per task group, with the hours actually logged against task types of that group
     db.query(
       `SELECT e.task_group_id, g.name, e.effort_percentage,
-              COALESCE((SELECT SUM(t.minutes) FROM timesheets t JOIN task_types tt ON tt.id = t.task_type_id
-                         WHERE t.project_id = e.project_id AND tt.task_group_id = e.task_group_id), 0) AS actual_minutes,
-              (SELECT count(*)::int FROM timesheets t JOIN task_types tt ON tt.id = t.task_type_id
-                WHERE t.project_id = e.project_id AND tt.task_group_id = e.task_group_id) AS entries,
+              COALESCE((SELECT SUM(t.minutes) FROM timesheets t JOIN tasks k ON k.id = t.task_id JOIN task_types tt ON tt.id = k.task_type_id
+                         WHERE k.project_id = e.project_id AND tt.task_group_id = e.task_group_id), 0) AS actual_minutes,
+              (SELECT count(*)::int FROM timesheets t JOIN tasks k ON k.id = t.task_id JOIN task_types tt ON tt.id = k.task_type_id
+                WHERE k.project_id = e.project_id AND tt.task_group_id = e.task_group_id) AS entries,
               (SELECT count(*)::int FROM tasks k WHERE k.project_id = e.project_id AND k.task_group_id = e.task_group_id AND k.is_active
                   AND k.status IN ('in_progress', 'completed')) AS started,
               -- the % complete of the group in the latest Update-tab review that reported it
-              (SELECT g2.completion_percentage FROM project_review_task_groups g2 JOIN project_reviews r2 ON r2.id = g2.project_review_id
+              (SELECT g2.completion_percentage FROM project_progress_update_groups g2 JOIN project_progress_updates r2 ON r2.id = g2.progress_update_id
                 WHERE r2.project_id = e.project_id AND g2.task_group_id = e.task_group_id ORDER BY r2.review_date DESC, r2.id DESC LIMIT 1) AS reported
-         FROM project_task_group_estimates e JOIN task_groups g ON g.id = e.task_group_id
+         FROM project_effort_estimates e JOIN task_groups g ON g.id = e.task_group_id
         WHERE e.project_id = $1 ORDER BY e.effort_percentage DESC, g.name`,
       [id],
     ),
@@ -527,10 +528,10 @@ export async function projectActivity(db, auth, id) {
 /** A stage (lookups PROJECT_STAGE) and the status category it stands for. */
 async function resolveStage(db, stageId) {
   const { rows } = stageId
-    ? await db.query(`SELECT id, name, value, is_visible FROM lookups WHERE id = $1 AND type = 'PROJECT_STAGE'`, [stageId])
+    ? await db.query(`SELECT id, name, value, is_visible FROM parameter_values WHERE id = $1 AND type = 'PROJECT_STAGE'`, [stageId])
     : // default for new projects: the first "not started" stage (Draft)
       await db.query(
-        `SELECT id, name, value, is_visible FROM lookups WHERE type = 'PROJECT_STAGE' AND is_visible
+        `SELECT id, name, value, is_visible FROM parameter_values WHERE type = 'PROJECT_STAGE' AND is_visible
           ORDER BY (value = 'not_started') DESC, display_order, name LIMIT 1`,
       );
   const st = rows[0];
@@ -605,7 +606,7 @@ async function applyQuotedHours(db, body, before = {}) {
   const currency = (body.estimatedAmountCurrency !== undefined ? body.estimatedAmountCurrency : before.estimated_amount_currency)?.trim();
   const divisionId = body.projectDivisionId ?? before.project_division_id;
   if (amount == null || !currency || !divisionId) return body;
-  const { rows } = await db.query(`SELECT rate_per_hour FROM project_division_quote_rates WHERE project_division_id = $1 AND currency = $2`, [divisionId, currency]);
+  const { rows } = await db.query(`SELECT rate_per_hour FROM division_quote_rates WHERE project_division_id = $1 AND currency = $2`, [divisionId, currency]);
   if (!rows[0]) return body;
   return { ...body, estimatedHours: exact(amount / rows[0].rate_per_hour) };
 }
@@ -627,11 +628,36 @@ export async function createProject(db, auth, input) {
     const projectId = rows[0].id;
 
     await client.query(
-      `INSERT INTO project_task_group_estimates (project_id, task_group_id, effort_percentage, created_by, updated_by)
+      `INSERT INTO project_effort_estimates (project_id, task_group_id, effort_percentage, created_by, updated_by)
        SELECT $1, task_group_id, effort_percentage, $3, $3
-         FROM project_type_default_estimates WHERE project_type_id = $2`,
+         FROM project_type_effort_defaults WHERE project_type_id = $2`,
       [projectId, body.projectTypeId, auth.userId],
     );
+<<<<<<< HEAD
+=======
+    const tasks = await client.query(
+      // task estimate = project estimated hours × the task's effort % (when both are known)
+      `INSERT INTO tasks (project_id, task_group_id, task_type_id, name, description, owner_id, status,
+                          estimated_minutes, display_order, created_by, updated_by, task_category_id)
+       SELECT $1, task_group_id, task_type_id, task_title, description, $2, 'to_do',
+              ROUND($5::numeric * 60 * effort_percentage / 100)::int, sort_order, $4, $4,
+              (SELECT c.id FROM task_categories c WHERE c.is_project ORDER BY c.is_active DESC, c.display_order, c.id LIMIT 1)
+         FROM project_type_task_templates WHERE project_type_id = $3
+        ORDER BY sort_order`,
+      [projectId, body.ownerId, body.projectTypeId, auth.userId, body.estimatedHours ?? null],
+    );
+    // each task keeps the task roles (skills) of its template task
+    await client.query(
+      `INSERT INTO task_skills (task_id, skill_id)
+       SELECT DISTINCT t.id, r.role_id
+         FROM tasks t
+         JOIN project_type_task_templates tt ON tt.project_type_id = $2 AND tt.task_title = t.name
+         JOIN project_type_task_template_roles r ON r.task_template_id = tt.id
+        WHERE t.project_id = $1
+       ON CONFLICT DO NOTHING`,
+      [projectId, body.projectTypeId],
+    );
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
     await client.query(
       `INSERT INTO project_members (project_id, user_id, access_level, created_by, updated_by) VALUES ($1, $2, 'edit', $3, $3)`,
       [projectId, body.ownerId, auth.userId],
@@ -759,23 +785,21 @@ export async function projectTasks(db, auth, id) {
   await getProject(db, auth, id); // existence + data scope
   const [tasks, members] = await Promise.all([
     db.query(
-      `SELECT t.id, t.name, t.description, t.status, t.priority, g.name AS group_name, tt.name AS type_name,
-              t.owner_id, o.name AS owner_name, t.assigned_to, a.name AS assigned_to_name,
-              t.planned_start, t.planned_end, t.is_continuous, t.completed_on,
-              (t.status <> 'completed' AND NOT t.is_continuous AND t.planned_end < now()) AS is_overdue,
-              (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id) AS subtask_count,
-              (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id AND s.is_done) AS subtask_done,
+      `SELECT t.id, t.name, t.description, t.status, g.name AS group_name, tt.name AS type_name,
+              t.owner_id, o.name AS owner_name, h.user_id AS assigned_to, a.name AS assigned_to_name,
+              t.planned_start, t.planned_end, t.completed_on,
+              (t.status <> 'completed' AND t.planned_end < now()) AS is_overdue,
               COALESCE((SELECT json_agg(json_build_object('id', l.id, 'name', l.name) ORDER BY l.display_order, l.name)
-                          FROM task_skills ts JOIN lookups l ON l.id = ts.skill_id WHERE ts.task_id = t.id), '[]') AS skills
+                          FROM task_skills ts JOIN parameter_values l ON l.id = ts.skill_id WHERE ts.task_id = t.id), '[]') AS skills
          FROM tasks t
          LEFT JOIN task_groups g ON g.id = t.task_group_id
          LEFT JOIN task_types tt ON tt.id = t.task_type_id
          LEFT JOIN users o ON o.id = t.owner_id
-         LEFT JOIN users a ON a.id = t.assigned_to
+         LEFT JOIN task_holders h ON h.task_id = t.id
+         LEFT JOIN users a ON a.id = h.user_id
         WHERE t.project_id = $1 AND t.is_active
-        -- open work first, then by priority (urgent → low), then the soonest end date (continuous after dated)
+        -- open work first, then the soonest end date
         ORDER BY (t.status = 'completed'),
-                 COALESCE(array_position(ARRAY['urgent','high','medium','low']::varchar[], t.priority), 5),
                  t.planned_end NULLS LAST, t.display_order, t.id`,
       [id],
     ),
@@ -801,7 +825,6 @@ export async function projectTasks(db, auth, id) {
       name: t.name,
       description: t.description,
       status: t.status,
-      priority: t.priority,
       taskGroupName: t.group_name,
       taskTypeName: t.type_name,
       ownerId: t.owner_id,
@@ -810,11 +833,8 @@ export async function projectTasks(db, auth, id) {
       assignedToName: t.assigned_to_name,
       plannedStart: t.planned_start,
       plannedEnd: t.planned_end,
-      isContinuous: t.is_continuous,
       completedOn: t.completed_on,
       isOverdue: t.is_overdue,
-      subtaskCount: t.subtask_count,
-      subtaskDone: t.subtask_done,
       skills: t.skills,
       matches,
     };
@@ -877,11 +897,7 @@ export async function deleteProject(db, auth, id) {
   const project = await getProject(db, auth, id);
   try {
     await db.tx(async (client) => {
-      // children before parents (tasks.parent_task_id is ON DELETE RESTRICT)
-      const { rows } = await client.query(`SELECT COALESCE(MAX(level), 0) AS max FROM tasks WHERE project_id = $1`, [id]);
-      for (let level = rows[0].max; level >= 0; level -= 1) {
-        await client.query(`DELETE FROM tasks WHERE project_id = $1 AND level = $2`, [id, level]);
-      }
+      await client.query(`DELETE FROM tasks WHERE project_id = $1`, [id]);
       await client.query(`DELETE FROM projects WHERE id = $1`, [id]);
       await writeAudit(client, { entity: 'projects', entityId: id, action: 'delete', userId: auth.userId, message: `Project ${project.code} deleted` });
     });

@@ -8,7 +8,7 @@ export async function assertGroupsHaveNoWork(db, projectId, groupIds) {
   if (!groupIds.length) return;
   const { rows } = await db.query(
     `SELECT g.name,
-            (SELECT count(*)::int FROM timesheets t JOIN task_types tt ON tt.id = t.task_type_id WHERE t.project_id = $1 AND tt.task_group_id = g.id) AS entries,
+            (SELECT count(*)::int FROM timesheets t JOIN tasks k0 ON k0.id = t.task_id JOIN task_types tt ON tt.id = k0.task_type_id WHERE k0.project_id = $1 AND tt.task_group_id = g.id) AS entries,
             (SELECT count(*)::int FROM tasks k WHERE k.project_id = $1 AND k.task_group_id = g.id AND k.is_active AND k.status IN ('in_progress', 'completed')) AS started
        FROM task_groups g WHERE g.id = ANY($2) ORDER BY g.name`,
     [projectId, groupIds],

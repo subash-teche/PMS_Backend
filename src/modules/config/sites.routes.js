@@ -5,8 +5,7 @@ import { escapeLike, paginationQuerySchema, pagedResponseSchema, WhereBuilder } 
 
 /*
  * Site Master: a site with its shifts ("Morning Shift" 09:00–18:00 …), saved together.
- * A site needs at least one shift; a shift that users / rosters / attendance use cannot be
- * removed – make it inactive instead.
+ * A site needs at least one shift; a shift that users use cannot be removed – make it inactive instead.
  */
 
 const tags = ['Sites'];
@@ -65,9 +64,7 @@ const item = {
   },
 };
 
-const IN_USE = (a) => `(EXISTS (SELECT 1 FROM users u WHERE u.site_shift_id = ${a}.id)
-                     OR EXISTS (SELECT 1 FROM rosters r WHERE r.site_shift_id = ${a}.id)
-                     OR EXISTS (SELECT 1 FROM attendance at WHERE at.site_shift_id = ${a}.id))`;
+const IN_USE = (a) => `EXISTS (SELECT 1 FROM users u WHERE u.site_shift_id = ${a}.id)`;
 
 const SELECT = `
   SELECT s.id, s.name, s.is_active, s.created_at, s.updated_at,
@@ -229,7 +226,7 @@ export default async function sitesRoutes(fastify) {
           await writeAudit(client, { entity: 'sites', entityId: id, action: 'delete', userId: req.auth.userId });
         });
       } catch (err) {
-        if (isReferenceError(err)) throw conflict('Users or attendance are on this site – move them or make the site inactive');
+        if (isReferenceError(err)) throw conflict('Users are on this site – move them or make the site inactive');
         throw err;
       }
       return reply.status(204).send();

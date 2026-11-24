@@ -11,22 +11,18 @@ const item = {
     date: { type: 'string' },
     position: { type: 'integer' },
     size: { type: 'string', enum: ['big', 'medium', 'small'] },
-    kind: { type: 'string', enum: ['task', 'subtask', 'note'] },
-    taskId: { type: ['integer', 'null'] },
-    subtaskId: { type: ['integer', 'null'] },
-    linkTaskId: { type: ['integer', 'null'], description: 'task page to open (the parent task for a subtask)' },
-    parentTaskName: { type: ['string', 'null'] },
-    subtaskDue: { type: ['string', 'null'] },
+    taskId: { type: 'integer' },
+    stepStatus: { type: ['string', 'null'], description: "Task Management item: the user's own step (offered / todo / active / done)" },
+    carryover: { type: 'boolean', description: 'a day that is over whose task went on to a later day (not done on this day)' },
+    dueDate: { type: ['string', 'null'] },
     title: { type: 'string' },
     minutes: { type: 'integer' },
     isDone: { type: 'boolean' },
-    doneAt: { type: ['string', 'null'], format: 'date-time' },
     taskStatus: { type: ['string', 'null'] },
-    taskPriority: { type: ['string', 'null'] },
     projectId: { type: ['integer', 'null'] },
     categoryId: { type: ['integer', 'null'] },
     categoryName: { type: ['string', 'null'] },
-    addedByName: { type: ['string', 'null'] },
+    planDone: { type: 'boolean' },
     userName: { type: ['string', 'null'] },
     projectCode: { type: ['string', 'null'] },
     projectTitle: { type: ['string', 'null'] },
@@ -34,7 +30,7 @@ const item = {
 };
 const day = {
   type: 'object',
-  properties: { date: { type: 'string' }, today: { type: 'string' }, slots: { type: 'integer' }, items: { type: 'array', items: item } },
+  properties: { date: { type: 'string' }, today: { type: 'string' }, slots: { type: 'integer' }, waiting: { type: 'integer', description: 'tasks planned for the day that did not fit in the slots' }, items: { type: 'array', items: item } },
 };
 
 export default async function task135Routes(fastify) {
@@ -49,26 +45,28 @@ export default async function task135Routes(fastify) {
   );
 
   fastify.get(
-    '/subtasks',
+    '/flow-planned',
     {
       schema: {
         tags,
-        summary: 'Picker: open subtasks assigned to me',
-        querystring: { type: 'object', properties: { search: { type: 'string', maxLength: 200 } } },
+        summary: 'What you planned in Task Management for a day (pick from it to fill your slots)',
+        querystring: { type: 'object', properties: { date } },
         response: {
           200: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                id: { type: 'integer' },
-                title: { type: 'string' },
-                dueDate: { type: ['string', 'null'] },
                 taskId: { type: 'integer' },
-                taskName: { type: 'string' },
-                priority: { type: ['string', 'null'] },
+                title: { type: 'string' },
+                scope: { type: 'string', enum: ['day', 'week'] },
+                stepStatus: { type: 'string' },
+                taskStatus: { type: 'string' },
+                dueDate: { type: ['string', 'null'] },
+                projectId: { type: 'integer' },
                 projectCode: { type: ['string', 'null'] },
                 projectTitle: { type: ['string', 'null'] },
+                inSlot: { type: 'boolean' },
               },
             },
           },
@@ -76,7 +74,7 @@ export default async function task135Routes(fastify) {
       },
       preHandler: can('view'),
     },
-    (req) => service.mySubtasks(db, req.auth, req.query.search),
+    (req) => service.flowPlanned(db, req.auth, req.query.date),
   );
 
   fastify.post(
@@ -84,11 +82,12 @@ export default async function task135Routes(fastify) {
     {
       schema: {
         tags,
-        summary: 'Add a task, a subtask (assigned to you) or a free text to a day (next free slot)',
+        summary: 'Put one of your tasks on a day (next free slot)',
         body: {
           type: 'object',
           additionalProperties: false,
-          properties: { date, taskId: { type: 'integer', minimum: 1 }, subtaskId: { type: 'integer', minimum: 1 }, title: { type: 'string', maxLength: 300 } },
+          required: ['taskId'],
+          properties: { date, taskId: { type: 'integer', minimum: 1 } },
         },
         response: { 201: item },
       },
@@ -116,13 +115,13 @@ export default async function task135Routes(fastify) {
     {
       schema: {
         tags,
-        summary: 'Rename, set the time spent or tick done (a task is not changed; a subtask is ticked too)',
+        summary: "Tick the day's plan done or open it again (the task itself is not changed)",
         params: idParams,
         body: {
           type: 'object',
           additionalProperties: false,
           minProperties: 1,
-          properties: { title: { type: 'string', minLength: 1, maxLength: 300 }, minutes: { type: 'integer', minimum: 0, maximum: 1440 }, isDone: { type: 'boolean' } },
+          properties: { isDone: { type: 'boolean' } },
         },
         response: { 200: item },
       },

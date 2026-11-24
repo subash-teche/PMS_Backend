@@ -3,6 +3,7 @@ import { generateToken, hashPassword, sha256, verifyPassword } from '../../utils
 import { AppError, badRequest, unauthorized } from '../../utils/errors.js';
 import { getUserMenus, getUserPermissions } from '../menus/menus.service.js';
 import { projectAccessOf } from '../projects/project-access.js';
+import { appsOf } from '../../config/flow.js';
 import { loadAuthContext } from './auth-context.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -125,6 +126,8 @@ export async function getSessionInfo(db, userIdOrAuth) {
       role: auth.role,
       isSuperAdmin: auth.isSuperAdmin,
     },
+    // what the role can open: 'pms' for everyone, 'tm' (Tasks board, 1-3-5, Messages) for ADMIN / PROJECT_MANAGER / EMPLOYEE
+    apps: appsOf(auth),
     permissions,
     // which project tabs / Project-tab fields the user sees or edits (Roles & Permissions → Project access)
     projectAccess: projectAccessOf(auth),

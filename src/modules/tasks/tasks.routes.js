@@ -43,11 +43,6 @@ export default async function tasksRoutes(fastify) {
     service.updateTask(db, req.auth, req.params.id, req.body),
   );
 
-  // view permission: a subtask assignee may only have read access to the task itself
-  fastify.put('/:id/subtasks/:subtaskId/done', { schema: schemas.subtaskDoneSchema, preHandler: authorize(SCREENS.TASKS, 'view') }, (req) =>
-    service.setSubtaskDone(db, req.auth, req.params.id, req.params.subtaskId, req.body.isDone),
-  );
-
   fastify.delete('/:id', { schema: schemas.deleteSchema, preHandler: authorize(SCREENS.TASKS, 'delete') }, async (req, reply) => {
     await service.deleteTask(db, req.auth, req.params.id);
     return reply.status(204).send();

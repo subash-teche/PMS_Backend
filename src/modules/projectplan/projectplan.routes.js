@@ -47,7 +47,6 @@ const plan = {
           taskTypeName: { type: ['string', 'null'] },
           name: { type: 'string' },
           status: { type: 'string' },
-          isContinuous: { type: 'boolean' },
           assignedToName: { type: ['string', 'null'] },
           plannedStart: { type: ['string', 'null'] },
           plannedEnd: { type: ['string', 'null'] },
@@ -55,8 +54,6 @@ const plan = {
           finished: { type: ['string', 'null'] },
           estimatedMinutes: { type: 'integer' },
           loggedMinutes: { type: 'integer' },
-          subtaskTotal: { type: 'integer' },
-          subtaskDone: { type: 'integer' },
           logs: { type: 'array', description: 'the days time was logged on the task', items: { type: 'object', properties: { date: { type: 'string' }, minutes: { type: 'integer' } } } },
         },
       },
@@ -69,13 +66,13 @@ const plan = {
   },
 };
 
-/** Plan tab of a project (/projects/:id/plan) – the project owner only (checked in the service). */
+/** Plan tab of a project (/projects/:id/plan) – by the role's Project access for the Plan tab (checked in the service). */
 export default async function projectPlanRoutes(fastify) {
   const { db, authorize } = fastify;
   fastify.addHook('onRequest', fastify.authenticate);
   const view = authorize(SCREENS.PROJECTS, 'view');
 
-  fastify.get('/:id/plan', { schema: { tags, summary: 'Weekly plan by task group (project owner)', params, response: { 200: plan } }, preHandler: view }, (req) =>
+  fastify.get('/:id/plan', { schema: { tags, summary: 'Weekly plan by task group', params, response: { 200: plan } }, preHandler: view }, (req) =>
     service.getPlan(db, req.auth, req.params.id),
   );
   fastify.post(

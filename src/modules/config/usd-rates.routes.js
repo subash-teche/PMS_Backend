@@ -30,7 +30,7 @@ const SELECT = `
          CASE WHEN upper(trim(l.value)) = 'USD' THEN 1 ELSE r.usd_rate END AS usd_rate,
          upper(trim(l.value)) = 'USD' AS is_fixed,
          u.name AS updated_by_name, r.updated_at
-    FROM lookups l
+    FROM parameter_values l
     LEFT JOIN currency_usd_rates r ON r.currency_id = l.id
     LEFT JOIN users u ON u.id = r.updated_by
    WHERE l.type = 'CURRENCY'`;

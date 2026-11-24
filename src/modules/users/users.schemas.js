@@ -22,8 +22,6 @@ const user = {
     userTypeName: { type: ['string', 'null'] },
     reportsTo: { type: ['integer', 'null'] },
     reportsToName: { type: ['string', 'null'] },
-    reviewedBy: { type: ['integer', 'null'] },
-    reviewedByName: { type: ['string', 'null'] },
     siteId: { type: ['integer', 'null'] },
     siteName: { type: ['string', 'null'] },
     siteShiftId: { type: ['integer', 'null'] },
@@ -34,7 +32,6 @@ const user = {
     timeZone: { type: 'string' },
     customerId: { type: ['integer', 'null'] },
     customerName: { type: ['string', 'null'] },
-    vendorId: { type: ['integer', 'null'] },
     isActive: { type: 'boolean' },
     isOnLeave: { type: 'boolean' },
     isLocked: { type: 'boolean' },
@@ -55,7 +52,6 @@ const userFields = {
   userTypeId: optId,
   isActive: { type: 'boolean' },
   reportsTo: optId,
-  reviewedBy: optId,
   siteId: optId,
   siteShiftId: optId,
   resourceGradeId: optId,
@@ -64,7 +60,6 @@ const userFields = {
   timeZone: { type: 'string', minLength: 1, maxLength: 50 },
   isOnLeave: { type: 'boolean' },
   customerId: optId,
-  vendorId: optId,
 };
 
 export const listUsersSchema = {
@@ -142,7 +137,7 @@ export const userSummarySchema = {
             people: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' } } } },
           },
         },
-        externalLogins: { type: 'object', properties: { customer: { type: 'integer' }, vendor: { type: 'integer' } } },
+        externalLogins: { type: 'object', properties: { customer: { type: 'integer' } } },
       },
     },
   },

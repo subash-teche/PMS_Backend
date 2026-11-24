@@ -1,8 +1,8 @@
 /*
  * Project details tabs that have their own child records:
  *   Users    – project_members (who is on the project; what they may do comes from their role)
- *   Estimate – project_task_group_estimates (% of effort per task group)
- *   Update   – project_reviews + project_review_task_groups (stage, comment, % completed per group)
+ *   Estimate – project_effort_estimates (% of effort per task group)
+ *   Update   – project_progress_updates + project_progress_update_groups (stage, comment, % completed per group)
  */
 import { badRequest } from '../../utils/errors.js';
 import { assertGroupsHaveNoWork, assertGroupsRemovable } from '../projectplan/plan-guard.js';
@@ -40,12 +40,12 @@ export async function loadMembers(db, projectId, ownerId) {
             trim(p.estimated_amount_currency) AS project_currency,
             (SELECT t.name FROM user_teams ut JOIN teams t ON t.id = ut.team_id WHERE ut.user_id = u.id ORDER BY ut.team_id LIMIT 1) AS team_name,
             (SELECT ut.position FROM user_teams ut WHERE ut.user_id = u.id AND ut.position IS NOT NULL ORDER BY ut.team_id LIMIT 1) AS position,
-            COALESCE((SELECT SUM(t.minutes) FROM timesheets t WHERE t.project_id = pm.project_id AND t.user_id = u.id), 0) AS logged_minutes
+            COALESCE((SELECT SUM(t.minutes) FROM timesheets t JOIN tasks k ON k.id = t.task_id WHERE k.project_id = pm.project_id AND t.user_id = u.id), 0) AS logged_minutes
        FROM project_members pm
        JOIN projects p ON p.id = pm.project_id
        JOIN users u ON u.id = pm.user_id
        LEFT JOIN resource_grades rg ON rg.id = u.resource_grade_id
-       LEFT JOIN lookups g ON g.id = rg.grade_id
+       LEFT JOIN parameter_values g ON g.id = rg.grade_id
       WHERE pm.project_id = $1
       ORDER BY (u.id = $2) DESC, u.name`,
     [projectId, ownerId],
@@ -82,10 +82,11 @@ export async function loadMemberHours(db, projectId) {
   const { rows } = await db.query(
     `SELECT u.id, u.name, SUM(t.minutes)::int AS minutes, ${RATE_USD('pm', 'u', 'p')} AS rate
        FROM timesheets t
-       JOIN projects p ON p.id = t.project_id
+       JOIN tasks k ON k.id = t.task_id
+       JOIN projects p ON p.id = k.project_id
        JOIN users u ON u.id = t.user_id
-       LEFT JOIN project_members pm ON pm.project_id = t.project_id AND pm.user_id = t.user_id
-      WHERE t.project_id = $1
+       LEFT JOIN project_members pm ON pm.project_id = k.project_id AND pm.user_id = t.user_id
+      WHERE k.project_id = $1
       GROUP BY u.id, u.name, pm.cost_per_hour, pm.currency, u.resource_grade_id, p.estimated_amount_currency
       ORDER BY minutes DESC, u.name`,
     [projectId],
@@ -106,8 +107,8 @@ export async function memberUsage(db, projectId, userIds) {
   if (!userIds.length) return [];
   const { rows } = await db.query(
     `SELECT u.id, u.name,
-            (SELECT count(*)::int FROM timesheets t WHERE t.project_id = $1 AND t.user_id = u.id) AS entries,
-            (SELECT count(*)::int FROM tasks k WHERE k.project_id = $1 AND (k.assigned_to = u.id OR k.owner_id = u.id)) AS tasks
+            (SELECT count(*)::int FROM timesheets t JOIN tasks k ON k.id = t.task_id WHERE k.project_id = $1 AND t.user_id = u.id) AS entries,
+            (SELECT count(*)::int FROM tasks k WHERE k.project_id = $1 AND (EXISTS (SELECT 1 FROM task_members km WHERE km.task_id = k.id AND km.user_id = u.id) OR k.owner_id = u.id)) AS tasks
        FROM users u WHERE u.id = ANY($2)`,
     [projectId, userIds],
   );
@@ -201,7 +202,7 @@ export async function saveEstimates(client, auth, projectId, estimates, confirmR
 
   const read = () =>
     client.query(
-      `SELECT e.task_group_id, e.effort_percentage, g.name FROM project_task_group_estimates e JOIN task_groups g ON g.id = e.task_group_id
+      `SELECT e.task_group_id, e.effort_percentage, g.name FROM project_effort_estimates e JOIN task_groups g ON g.id = e.task_group_id
         WHERE e.project_id = $1 ORDER BY e.effort_percentage DESC, g.name`,
       [projectId],
     );
@@ -211,15 +212,15 @@ export async function saveEstimates(client, auth, projectId, estimates, confirmR
   await assertGroupsHaveNoWork(client, projectId, removed);
   // a task group with tasks made from the plan cannot leave the estimate while they are open
   await assertGroupsRemovable(client, projectId, removed, confirmRemove, 'estimates');
-  await client.query(`DELETE FROM project_task_group_estimates WHERE project_id = $1 AND NOT (task_group_id = ANY($2))`, [projectId, ids]);
+  await client.query(`DELETE FROM project_effort_estimates WHERE project_id = $1 AND NOT (task_group_id = ANY($2))`, [projectId, ids]);
   // and it leaves the plan with it
-  await client.query(`DELETE FROM project_week_plans WHERE project_id = $1 AND NOT (task_group_id = ANY($2))`, [projectId, ids]);
+  await client.query(`DELETE FROM project_plan_weeks WHERE project_id = $1 AND NOT (task_group_id = ANY($2))`, [projectId, ids]);
   for (const e of list) {
     await client.query(
-      `INSERT INTO project_task_group_estimates (project_id, task_group_id, effort_percentage, created_by, updated_by)
+      `INSERT INTO project_effort_estimates (project_id, task_group_id, effort_percentage, created_by, updated_by)
        VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT (project_id, task_group_id) DO UPDATE SET effort_percentage = EXCLUDED.effort_percentage, updated_by = EXCLUDED.updated_by
-        WHERE project_task_group_estimates.effort_percentage IS DISTINCT FROM EXCLUDED.effort_percentage`,
+        WHERE project_effort_estimates.effort_percentage IS DISTINCT FROM EXCLUDED.effort_percentage`,
       [projectId, e.taskGroupId, e.effortPercentage, auth.userId],
     );
   }
@@ -234,21 +235,21 @@ export async function listReviews(db, projectId) {
   const [reviews, groups, estimates] = await Promise.all([
     db.query(
       `SELECT r.id, r.stage, r.review_date, r.comment, r.is_system, r.created_at, u.name AS reviewer_name
-         FROM project_reviews r LEFT JOIN users u ON u.id = r.created_by
+         FROM project_progress_updates r LEFT JOIN users u ON u.id = r.created_by
         WHERE r.project_id = $1 ORDER BY r.review_date DESC, r.id DESC`,
       [projectId],
     ),
     db.query(
-      `SELECT g.project_review_id, g.task_group_id, g.completion_percentage
-         FROM project_review_task_groups g JOIN project_reviews r ON r.id = g.project_review_id WHERE r.project_id = $1`,
+      `SELECT g.progress_update_id, g.task_group_id, g.completion_percentage
+         FROM project_progress_update_groups g JOIN project_progress_updates r ON r.id = g.progress_update_id WHERE r.project_id = $1`,
       [projectId],
     ),
-    db.query(`SELECT task_group_id, effort_percentage FROM project_task_group_estimates WHERE project_id = $1`, [projectId]),
+    db.query(`SELECT task_group_id, effort_percentage FROM project_effort_estimates WHERE project_id = $1`, [projectId]),
   ]);
   const effort = new Map(estimates.rows.map((e) => [e.task_group_id, Number(e.effort_percentage)]));
   return reviews.rows.map((r) => {
     const items = groups.rows
-      .filter((g) => g.project_review_id === r.id)
+      .filter((g) => g.progress_update_id === r.id)
       .map((g) => ({ taskGroupId: g.task_group_id, completionPercentage: Number(g.completion_percentage) }));
     const overall = Math.round(items.reduce((s, g) => s + ((effort.get(g.taskGroupId) ?? 0) * g.completionPercentage) / 100, 0));
     return {
@@ -268,7 +269,7 @@ export async function listReviews(db, projectId) {
 /** A system log entry on the Update tab (e.g. "Stage changed from Draft to In Progress"). */
 export async function insertSystemLog(client, auth, projectId, stageName, reviewDate, message) {
   await client.query(
-    `INSERT INTO project_reviews (project_id, stage, review_date, comment, is_system, created_by, updated_by)
+    `INSERT INTO project_progress_updates (project_id, stage, review_date, comment, is_system, created_by, updated_by)
      VALUES ($1, $2, $3, $4, true, $5, $5)`,
     [projectId, stageName, reviewDate, message, auth.userId],
   );
@@ -276,18 +277,18 @@ export async function insertSystemLog(client, auth, projectId, stageName, review
 
 /** Adds a review (progress and/or comment); only task groups of the project estimate are kept. */
 export async function insertReview(client, auth, projectId, stageName, body) {
-  const { rows: est } = await client.query(`SELECT task_group_id FROM project_task_group_estimates WHERE project_id = $1`, [projectId]);
+  const { rows: est } = await client.query(`SELECT task_group_id FROM project_effort_estimates WHERE project_id = $1`, [projectId]);
   const allowed = new Set(est.map((e) => e.task_group_id));
   const { rows } = await client.query(
-    `INSERT INTO project_reviews (project_id, stage, review_date, comment, created_by, updated_by)
+    `INSERT INTO project_progress_updates (project_id, stage, review_date, comment, created_by, updated_by)
      VALUES ($1, $2, $3, $4, $5, $5) RETURNING id`,
     [projectId, stageName, body.reviewDate, body.comment, auth.userId],
   );
   for (const g of body.completion ?? []) {
     if (!allowed.has(g.taskGroupId)) continue;
     await client.query(
-      `INSERT INTO project_review_task_groups (project_review_id, task_group_id, completion_percentage) VALUES ($1, $2, $3)
-       ON CONFLICT (project_review_id, task_group_id) DO UPDATE SET completion_percentage = EXCLUDED.completion_percentage`,
+      `INSERT INTO project_progress_update_groups (progress_update_id, task_group_id, completion_percentage) VALUES ($1, $2, $3)
+       ON CONFLICT (progress_update_id, task_group_id) DO UPDATE SET completion_percentage = EXCLUDED.completion_percentage`,
       [rows[0].id, g.taskGroupId, g.completionPercentage],
     );
   }

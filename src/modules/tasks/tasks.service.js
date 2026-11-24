@@ -7,11 +7,9 @@ import { GRANTED } from '../taskaccess/taskaccess.service.js';
 
 /*
  * Tasks: created by a user for themselves, or for other people when the role's data scope allows
- * (All / Team). Each task has a category; a project category needs a project. A continuous task has
- * no earliest start / end before. Subtasks are a short list with their own assignee and due date.
+ * (All / Team). Each task has a category; a project category needs a project.
  *
- * "My tasks" = tasks I own, am assigned to, created, or have a subtask in.
- * Someone who only has a subtask sees the task read-only and can tick their own subtasks done.
+ * "My tasks" = tasks I own, am assigned to, created, or that are on a project I own.
  * "All tasks" = per the role data scope: all = everything, team = mine + my team members' tasks.
  */
 
@@ -19,25 +17,22 @@ const SORT_COLUMNS = {
   name: 't.name',
   plannedStart: 't.planned_start',
   plannedEnd: 't.planned_end',
-  priority: `array_position(ARRAY['urgent','high','medium','low']::varchar[], t.priority)`,
   status: `array_position(ARRAY['in_progress','to_do','hold','completed']::varchar[], t.status)`,
   createdAt: 't.created_at',
 };
 
 const STATUS_LABEL = { to_do: 'To do', in_progress: 'In progress', hold: 'Hold', completed: 'Completed' };
 
-const OVERDUE = `(t.status <> 'completed' AND NOT t.is_continuous AND t.planned_end < now())`;
+const OVERDUE = `(t.status <> 'completed' AND t.planned_end < now())`;
 
 const SELECT = `
   SELECT t.id, t.name, t.description, t.task_category_id, c.name AS category_name, COALESCE(c.is_project, false) AS is_project_category,
          COALESCE(c.is_private, false) AS is_private_category,
          t.project_id, p.code AS project_code, p.title AS project_title, p.owner_id AS project_owner_id,
-         t.owner_id, o.name AS owner_name, t.assigned_to, a.name AS assigned_to_name,
+         t.owner_id, o.name AS owner_name, h.user_id AS assigned_to, a.name AS assigned_to_name,
          t.task_group_id, tg.name AS task_group_name, t.task_type_id, tty.name AS task_type_name,
-         t.estimated_minutes, t.priority, t.status, t.is_continuous, t.planned_start, t.planned_end, t.completed_on,
+         t.estimated_minutes, t.status, t.planned_start, t.planned_end, t.completed_on,
          ${OVERDUE} AS is_overdue,
-         (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id) AS subtask_count,
-         (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id AND s.is_done) AS subtask_done,
          (SELECT count(*)::int FROM timesheets x WHERE x.task_id = t.id) AS timesheet_count,
          t.actual_start, t.completed_by, cpl.name AS completed_by_name,
          t.created_by, cb.name AS created_by_name, t.created_at, t.updated_at
@@ -45,7 +40,8 @@ const SELECT = `
     LEFT JOIN task_categories c ON c.id = t.task_category_id
     LEFT JOIN projects p ON p.id = t.project_id
     LEFT JOIN users o ON o.id = t.owner_id
-    LEFT JOIN users a ON a.id = t.assigned_to
+    LEFT JOIN task_holders h ON h.task_id = t.id
+    LEFT JOIN users a ON a.id = h.user_id
     LEFT JOIN users cb ON cb.id = t.created_by
     LEFT JOIN users cpl ON cpl.id = t.completed_by
     LEFT JOIN task_groups tg ON tg.id = t.task_group_id
@@ -59,7 +55,7 @@ const isManager = (auth) => auth.isSuperAdmin || auth.role.dataScope === 'all';
 
 const mine = (r, auth) => [r.owner_id, r.assigned_to, r.created_by].includes(auth.userId);
 const canEdit = (auth, r) => isManager(auth) || mine(r, auth);
-// full edit (people, dates, subtasks …): owner, creator, All-scope roles. The assignee only updates the status.
+// full edit (people, dates …): owner, creator, All-scope roles. The assignee only updates the status.
 const canManage = (auth, r) => isManager(auth) || r.owner_id === auth.userId || r.created_by === auth.userId;
 const ASSIGNEE_FIELDS = ['status', 'completedOn'];
 const canDelete = (auth, r) => isManager(auth) || r.owner_id === auth.userId || r.created_by === auth.userId;
@@ -71,7 +67,7 @@ const canDelete = (auth, r) => isManager(auth) || r.owner_id === auth.userId || 
 const isMasked = (auth, r) => r.is_private_category && !auth.isSuperAdmin && ![r.owner_id, r.assigned_to, r.created_by].includes(auth.userId);
 /** SQL twin of isMasked (search must not match hidden titles). */
 const maskedSql = (auth) =>
-  auth.isSuperAdmin ? 'false' : `(COALESCE(c.is_private, false) AND ${Number(auth.userId)} NOT IN (t.owner_id, COALESCE(t.assigned_to, 0), COALESCE(t.created_by, 0)))`;
+  auth.isSuperAdmin ? 'false' : `(COALESCE(c.is_private, false) AND ${Number(auth.userId)} NOT IN (t.owner_id, COALESCE(h.user_id, 0), COALESCE(t.created_by, 0)))`;
 
 const toDto = (auth) => (r) => ({
   id: r.id,
@@ -95,19 +91,12 @@ const toDto = (auth) => (r) => ({
   assignedTo: r.assigned_to,
   assignedToName: r.assigned_to_name,
   estimatedMinutes: r.estimated_minutes,
-  priority: r.priority,
   status: r.status,
-  isContinuous: r.is_continuous,
   plannedStart: r.planned_start,
   plannedEnd: r.planned_end,
   completedOn: r.completed_on,
   isOverdue: r.is_overdue,
-  subtaskCount: r.subtask_count,
   timesheetCount: r.timesheet_count,
-  subtaskDone: r.subtask_done,
-  // subtasks assigned to the signed-in user (filled by the list / get)
-  mySubtaskCount: r.my_subtask_count ?? 0,
-  mySubtaskDone: r.my_subtask_done ?? 0,
   createdBy: r.created_by,
   createdByName: r.created_by_name,
   startedAt: r.actual_start,
@@ -119,15 +108,14 @@ const toDto = (auth) => (r) => ({
   updatedAt: r.updated_at,
 });
 
-const MINE_SQL = `(t.owner_id = $? OR t.assigned_to = $? OR t.created_by = $?
-                   OR EXISTS (SELECT 1 FROM task_subtasks s WHERE s.task_id = t.id AND s.assigned_to = $?)
+const MINE_SQL = `(t.owner_id = $? OR h.user_id = $? OR t.created_by = $?
                    OR EXISTS (SELECT 1 FROM projects op WHERE op.id = t.project_id AND op.owner_id = $?))`; // tasks of my projects
 
 // Task Master: tasks owned by / assigned to people the user was given (view only)
-const GRANTED_SQL = `(${GRANTED('t.assigned_to', '$?')} OR ${GRANTED('t.owner_id', '$?')})`;
+const GRANTED_SQL = `(${GRANTED('h.user_id', '$?')} OR ${GRANTED('t.owner_id', '$?')})`;
 
-// My tasks: the work assigned to me (the task, or one of its subtasks)
-const ASSIGNED_SQL = `(t.assigned_to = $? OR EXISTS (SELECT 1 FROM task_subtasks s WHERE s.task_id = t.id AND s.assigned_to = $?))`;
+// My tasks: the work assigned to me
+const ASSIGNED_SQL = `h.user_id = $?`;
 
 /**
  * mine = assigned to me; all = everything I can see: my own / created / my projects' tasks,
@@ -136,17 +124,17 @@ const ASSIGNED_SQL = `(t.assigned_to = $? OR EXISTS (SELECT 1 FROM task_subtasks
 function applyScope(where, auth, scope) {
   const me = auth.userId;
   if (scope !== 'all') {
-    where.add(ASSIGNED_SQL, me, me);
+    where.add(ASSIGNED_SQL, me);
     return;
   }
   if (isManager(auth)) return;
   if (!canSeeAll(auth)) {
-    where.add(`(${MINE_SQL} OR ${GRANTED_SQL})`, me, me, me, me, me, me, me);
+    where.add(`(${MINE_SQL} OR ${GRANTED_SQL})`, me, me, me, me, me, me);
     return;
   }
   // team scope: mine + tasks owned by / assigned to people in my teams + Task Master
   where.add(
-    `(${MINE_SQL} OR t.assigned_to IN (SELECT other.user_id FROM user_teams mine JOIN user_teams other ON other.team_id = mine.team_id WHERE mine.user_id = $?)
+    `(${MINE_SQL} OR h.user_id IN (SELECT other.user_id FROM user_teams mine JOIN user_teams other ON other.team_id = mine.team_id WHERE mine.user_id = $?)
                   OR t.owner_id IN (SELECT other.user_id FROM user_teams mine JOIN user_teams other ON other.team_id = mine.team_id WHERE mine.user_id = $?)
                   OR ${GRANTED_SQL})`,
     me,
@@ -165,14 +153,14 @@ function applyScope(where, auth, scope) {
 function applyPeople(where, auth, q) {
   const people = idList(q.employeeId);
   applyScope(where, auth, people.length ? 'all' : q.scope);
-  if (people.length) where.add('(t.assigned_to = ANY($?) OR t.owner_id = ANY($?))', people, people);
+  if (people.length) where.add('(h.user_id = ANY($?) OR t.owner_id = ANY($?))', people, people);
 }
 
 const csv = (v) => (v ? String(v).split(',').map((x) => x.trim()).filter(Boolean) : []);
 
 /** Tasks nobody is assigned to yet are listed for the Super Admin only. */
 function hideUnassigned(where, auth) {
-  if (!auth.isSuperAdmin) where.add('t.assigned_to IS NOT NULL');
+  if (!auth.isSuperAdmin) where.add('h.user_id IS NOT NULL');
 }
 
 function buildFilters(auth, q) {
@@ -186,39 +174,26 @@ function buildFilters(auth, q) {
   }
   const status = csv(q.status);
   if (status.length) where.add('t.status = ANY($?)', status);
-  const priority = csv(q.priority);
-  if (priority.length) where.add('t.priority = ANY($?)', priority);
   const categoryIds = idList(q.categoryId);
   if (categoryIds.length) where.add('t.task_category_id = ANY($?)', categoryIds);
   const projectIds = idList(q.projectId);
   if (projectIds.length) where.add('t.project_id = ANY($?)', projectIds);
   const assignees = idList(q.assignedTo);
-  if (assignees.length) where.add('t.assigned_to = ANY($?)', assignees);
+  if (assignees.length) where.add('h.user_id = ANY($?)', assignees);
   if (q.overdue) where.add(OVERDUE);
   return where;
 }
 
-/**
- * Adds my_subtask_count / my_subtask_done (subtasks assigned to the user) to the task rows, and
- * in_today_135: the task is on its assignee's 1-3-5 today (the user's today).
- */
-async function addMySubtasks(db, auth, rows) {
+/** Adds in_today_135 to the task rows: the task is on its assignee's 1-3-5 today (the user's today). */
+async function addPlanFlags(db, auth, rows) {
   if (!rows.length) return;
-  const { rows: mine } = await db.query(
-    `SELECT task_id, count(*)::int AS n, count(*) FILTER (WHERE is_done)::int AS done
-       FROM task_subtasks WHERE task_id = ANY($1) AND assigned_to = $2 GROUP BY task_id`,
-    [rows.map((r) => r.id), auth.userId],
-  );
   const { rows: planned } = await db.query(
-    `SELECT i.task_id FROM task_135_items i JOIN tasks t ON t.id = i.task_id AND t.assigned_to = i.user_id
+    `SELECT i.task_id FROM daily_plan_items i JOIN task_holders h ON h.task_id = i.task_id AND h.user_id = i.user_id
       WHERE i.task_id = ANY($1) AND i.plan_date = $2`,
     [rows.map((r) => r.id), todayIn(auth.timeZone)],
   );
   for (const r of rows) {
     r.in_today_135 = planned.some((x) => x.task_id === r.id);
-    const m = mine.find((x) => x.task_id === r.id);
-    r.my_subtask_count = m?.n ?? 0;
-    r.my_subtask_done = m?.done ?? 0;
   }
 }
 
@@ -229,7 +204,7 @@ export async function listTasks(db, auth, q) {
   const limit = where.param(q.pageSize);
   const offset = where.param((q.page - 1) * q.pageSize);
   const { rows } = await db.query(
-    // open work first; tasks without dates (continuous) after the dated ones
+    // open work first; tasks without dates after the dated ones
     `${SELECT} ${where.toSql()}
       ORDER BY (t.status = 'completed'), ${sort} ${dir} NULLS LAST, t.id DESC
       LIMIT ${limit} OFFSET ${offset}`,
@@ -237,10 +212,10 @@ export async function listTasks(db, auth, q) {
   );
   const countWhere = buildFilters(auth, q);
   const { rows: totals } = await db.query(
-    `SELECT count(*)::int AS total FROM tasks t LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN task_categories c ON c.id = t.task_category_id ${countWhere.toSql()}`,
+    `SELECT count(*)::int AS total FROM tasks t LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN task_categories c ON c.id = t.task_category_id LEFT JOIN task_holders h ON h.task_id = t.id ${countWhere.toSql()}`,
     countWhere.params,
   );
-  await addMySubtasks(db, auth, rows);
+  await addPlanFlags(db, auth, rows);
   return { items: rows.map(toDto(auth)), total: totals[0].total, page: q.page, pageSize: q.pageSize };
 }
 
@@ -259,9 +234,8 @@ export async function taskSummary(db, auth, q) {
             count(*) FILTER (WHERE t.status = 'completed')::int AS completed,
             count(*) FILTER (WHERE t.status = 'completed' AND t.completed_on >= date_trunc('week', ${today})::date)::int AS completed_week,
             count(*) FILTER (WHERE ${OVERDUE})::int AS overdue,
-            count(*) FILTER (WHERE t.status <> 'completed' AND NOT t.is_continuous AND (t.planned_end AT TIME ZONE ${zone})::date = ${today})::int AS due_today,
-            count(*) FILTER (WHERE t.is_continuous AND t.status <> 'completed')::int AS continuous
-       FROM tasks t ${where.toSql()}`,
+            count(*) FILTER (WHERE t.status <> 'completed' AND (t.planned_end AT TIME ZONE ${zone})::date = ${today})::int AS due_today
+       FROM tasks t LEFT JOIN task_holders h ON h.task_id = t.id ${where.toSql()}`,
     where.params,
   );
   const r = rows[0];
@@ -274,7 +248,6 @@ export async function taskSummary(db, auth, q) {
     completedThisWeek: r.completed_week,
     overdue: r.overdue,
     dueToday: r.due_today,
-    continuous: r.continuous,
   };
 }
 
@@ -305,6 +278,16 @@ async function projectPeople(db, projectIds) {
   return new Map(rows.map((r) => [r.id, { ownerId: r.owner_id, peopleIds: [...new Set([r.owner_id, ...r.member_ids.map(Number)])].filter(Boolean) }]));
 }
 
+/** The task groups of projects (their Estimate tab, with a share of the effort): a project task is made in one of them. → Map projectId → [task group id]; none = the estimate is not set */
+async function projectGroups(db, projectIds) {
+  if (!projectIds.length) return new Map();
+  const { rows } = await db.query(
+    `SELECT project_id, array_agg(DISTINCT task_group_id ORDER BY task_group_id)::int[] AS ids FROM project_effort_estimates WHERE project_id = ANY($1) AND effort_percentage > 0 GROUP BY project_id`,
+    [projectIds],
+  );
+  return new Map(rows.map((r) => [r.project_id, r.ids]));
+}
+
 export async function taskOptions(db, auth) {
   const projects = PROJECTS_SQL(auth);
   const [categories, projectRows, users] = await Promise.all([
@@ -316,15 +299,16 @@ export async function taskOptions(db, auth) {
     db.query(projects.sql, projects.params),
     canAssignOthers(auth)
       ? db.query(
-          `SELECT u.id, u.name, u.emp_code AS code FROM users u JOIN roles r ON r.id = u.role_id
+          `SELECT u.id, u.name, u.employee_code AS code FROM users u JOIN roles r ON r.id = u.role_id
             WHERE u.is_active AND r.role_type = 'internal' ORDER BY u.name`,
         )
-      : db.query(`SELECT id, name, emp_code AS code FROM users WHERE id = $1`, [auth.userId]),
+      : db.query(`SELECT id, name, employee_code AS code FROM users WHERE id = $1`, [auth.userId]),
   ]);
   const people = await projectPeople(db, projectRows.rows.map((p) => p.id));
+  const groups = await projectGroups(db, projectRows.rows.map((p) => p.id));
   return {
     categories: categories.rows,
-    projects: projectRows.rows.map((p) => ({ ...p, ...(people.get(p.id) ?? { ownerId: null, peopleIds: [] }) })),
+    projects: projectRows.rows.map((p) => ({ ...p, ...(people.get(p.id) ?? { ownerId: null, peopleIds: [] }), taskGroupIds: groups.get(p.id) ?? [] })),
     users: users.rows,
     canAssignOthers: canAssignOthers(auth),
     canSeeAll: canSeeAll(auth),
@@ -343,24 +327,14 @@ async function loadTask(db, auth, id) {
 
 export async function getTask(db, auth, id) {
   const row = await loadTask(db, auth, id);
-  await addMySubtasks(db, auth, [row]);
-  if (isMasked(auth, row)) return { ...toDto(auth)(row), subtasks: [] }; // a personal task: no details
-  const { rows: subs } = await db.query(
-    `SELECT s.id, s.title, s.assigned_to, u.name AS assigned_to_name, s.due_date, s.is_done
-       FROM task_subtasks s LEFT JOIN users u ON u.id = s.assigned_to
-      WHERE s.task_id = $1 ORDER BY s.sort_order, s.id`,
-    [id],
-  );
-  return {
-    ...toDto(auth)(row),
-    subtasks: subs.map((s) => ({ id: s.id, title: s.title, assignedTo: s.assigned_to, assignedToName: s.assigned_to_name, dueDate: s.due_date, isDone: s.is_done })),
-  };
+  await addPlanFlags(db, auth, [row]);
+  return toDto(auth)(row);
 }
 
 
 /**
  * Checks the merged task (before + changes) and returns the values to store:
- * category / project, people, dates (continuous = none), completed date.
+ * category / project, people, dates, completed date.
  */
 async function validate(db, auth, v, before = null) {
   const { rows: cat } = await db.query(`SELECT id, is_project, is_active FROM task_categories WHERE id = $1`, [v.categoryId]);
@@ -403,6 +377,14 @@ async function validate(db, auth, v, before = null) {
     if (!rowCount) throw badRequest('Select a task group', [{ field: 'taskGroupId', message: 'does not exist' }]);
   }
 
+  // a project task's group must be one of the project's task groups (its Estimate tab)
+  if (cat[0].is_project && v.taskGroupId && (v.taskGroupId !== before?.task_group_id || v.projectId !== before?.project_id)) {
+    const ids = (await projectGroups(db, [v.projectId])).get(v.projectId) ?? [];
+    if (!ids.includes(v.taskGroupId)) {
+      throw badRequest(ids.length ? "Select one of the project's task groups" : 'The project plan and estimate are not set', [{ field: 'taskGroupId', message: ids.length ? 'not a task group of the project' : 'the project estimate is not set' }]);
+    }
+  }
+
   // the group must be one of the category's task groups (a category without groups takes any)
   if (v.taskGroupId && v.taskGroupId !== before?.task_group_id) {
     const [{ rows: allowed }, { rows: links }] = await Promise.all([
@@ -427,15 +409,10 @@ async function validate(db, auth, v, before = null) {
   if (!ok.has(v.ownerId)) throw badRequest('Select an active task owner', [{ field: 'ownerId', message: 'is not an active user' }]);
   if (!ok.has(v.assignedTo)) throw badRequest('Select an active user to assign', [{ field: 'assignedTo', message: 'is not an active user' }]);
 
-  if (v.isContinuous) {
-    v.plannedStart = null;
-    v.plannedEnd = null;
-  } else {
-    if (!v.plannedStart) throw badRequest('Enter the earliest start', [{ field: 'plannedStart', message: 'is required' }]);
-    if (!v.plannedEnd) throw badRequest('Enter the end before date', [{ field: 'plannedEnd', message: 'is required' }]);
-    if (new Date(v.plannedEnd) <= new Date(v.plannedStart)) {
-      throw badRequest('End before must be after the earliest start', [{ field: 'plannedEnd', message: 'must be after the earliest start' }]);
-    }
+  if (!v.plannedStart) throw badRequest('Enter the earliest start', [{ field: 'plannedStart', message: 'is required' }]);
+  if (!v.plannedEnd) throw badRequest('Enter the end before date', [{ field: 'plannedEnd', message: 'is required' }]);
+  if (new Date(v.plannedEnd) <= new Date(v.plannedStart)) {
+    throw badRequest('End before must be after the earliest start', [{ field: 'plannedEnd', message: 'must be after the earliest start' }]);
   }
 
   if (v.status === 'completed') v.completedOn = v.completedOn || todayIn(auth.timeZone); // the user's today
@@ -443,49 +420,72 @@ async function validate(db, auth, v, before = null) {
   return v;
 }
 
-/** A subtask is due on or before the day the task ends (an ongoing task has no end). */
-function assertSubtaskDates(auth, v) {
-  if (v.isContinuous || !v.plannedEnd) return;
-  const endDay = dateIn(v.plannedEnd, auth.timeZone);
-  const late = (v.subtasks ?? []).find((s) => typeof s.dueDate === 'string' && s.dueDate.slice(0, 10) > endDay);
-  if (late) {
-    throw badRequest(`Subtask "${late.title}" is due after the task's end date – a subtask must be due on or before it`, [{ field: 'subtasks', message: 'due after the task ends' }]);
-  }
+// The person a task is assigned to is its member (task_members): the one who holds the current step. These keep the members in line with
+// what the PMS task screens say (who it is assigned to, what its status is).
+const MEMBER_STATUS = { completed: 'done', in_progress: 'active' };
+
+/** The first (and only) member of a task that had nobody. */
+async function addHolder(client, taskId, userId, status) {
+  if (userId === null || userId === undefined) return;
+  const m = MEMBER_STATUS[status] ?? 'todo';
+  await client.query(
+    `INSERT INTO task_members (task_id, user_id, position, status, accepted_at, started_at, closed_at)
+     VALUES ($1, $2, 1, $3::varchar, now(), CASE WHEN $3::varchar IN ('active', 'done') THEN now() END, CASE WHEN $3::varchar = 'done' THEN now() END)`,
+    [taskId, userId, m],
+  );
 }
 
-/** Subtasks: title, due date and done – done by the task's assignee (`assignedTo`). */
-async function saveSubtasks(client, auth, taskId, subtasks, assignedTo) {
-  const keep = subtasks.filter((s) => s.id).map((s) => s.id);
-  await client.query(`DELETE FROM task_subtasks WHERE task_id = $1 AND NOT (id = ANY($2))`, [taskId, keep]);
-  for (const [i, s] of subtasks.entries()) {
-    const values = [s.title.trim(), assignedTo ?? null, s.dueDate ?? null, s.isDone ?? false, i + 1, auth.userId];
-    if (s.id) {
-      const { rowCount } = await client.query(
-        `UPDATE task_subtasks SET title = $1, assigned_to = $2, due_date = $3, is_done = $4, sort_order = $5, updated_by = $6
-          WHERE id = $7 AND task_id = $8`,
-        [...values, s.id, taskId],
-      );
-      if (rowCount) continue;
-    }
+/** Someone else holds the task now: the person on its current step is replaced (their plan and open timer go with them). */
+async function reassign(client, taskId, userId, status) {
+  const { rows } = await client.query(`SELECT id, user_id, status FROM task_members WHERE task_id = $1 AND status <> 'done' ORDER BY position LIMIT 1`, [taskId]);
+  const cur = rows[0];
+  if (!cur) {
+    const { rows: all } = await client.query(`SELECT count(*)::int AS n FROM task_members WHERE task_id = $1`, [taskId]);
+    if (!all[0].n) await addHolder(client, taskId, userId, status);
+    return;
+  }
+  if (cur.user_id === userId) return;
+  await client.query(`UPDATE task_members SET user_id = $2, status = CASE WHEN status = 'active' THEN 'todo' ELSE status END, started_at = NULL WHERE id = $1`, [cur.id, userId]);
+  await client.query(`DELETE FROM plan_items WHERE member_id = $1`, [cur.id]);
+  await client.query(`UPDATE task_timers SET status = 'ended', run_started_at = NULL WHERE member_id = $1 AND status IN ('ready', 'running', 'paused')`, [cur.id]);
+}
+
+/** The members follow a status set on the PMS task: completed closes every step, in progress starts the current one, to do / hold put it back to accepted. */
+async function followStatus(client, taskId, status) {
+  const { rows: ms } = await client.query(`SELECT id, status FROM task_members WHERE task_id = $1 ORDER BY position`, [taskId]);
+  if (!ms.length) return;
+  if (status === 'completed') {
     await client.query(
-      `INSERT INTO task_subtasks (task_id, title, assigned_to, due_date, is_done, sort_order, created_by, updated_by)
-       VALUES ($7, $1, $2, $3, $4, $5, $6, $6)`,
-      [...values, taskId],
+      `UPDATE task_members SET status = 'done', accepted_at = COALESCE(accepted_at, now()), started_at = COALESCE(started_at, now()), closed_at = COALESCE(closed_at, now())
+        WHERE task_id = $1 AND status <> 'done'`,
+      [taskId],
     );
+    return;
+  }
+  // reopened: the last person has it again
+  let cur = ms.find((m) => m.status !== 'done');
+  if (!cur) {
+    cur = ms[ms.length - 1];
+    await client.query(`UPDATE task_members SET status = 'todo', closed_at = NULL WHERE id = $1`, [cur.id]);
+  }
+  if (status === 'in_progress') {
+    await client.query(`UPDATE task_members SET status = 'active', accepted_at = COALESCE(accepted_at, now()), started_at = COALESCE(started_at, now()) WHERE id = $1`, [cur.id]);
+  } else if (cur.status === 'active') {
+    await client.query(`UPDATE task_members SET status = 'todo', started_at = NULL WHERE id = $1`, [cur.id]);
   }
 }
 
-/** Inserts a validated task (+ subtasks, audit) and returns its id. */
+/** Inserts a validated task (+ audit) and returns its id. */
 async function insertTask(client, auth, v, auditMessage) {
   const { rows } = await client.query(
-    `INSERT INTO tasks (kind, task_category_id, project_id, customer_id, task_group_id, task_type_id, name, description, owner_id, assigned_to, estimated_minutes,
-                        priority, status, is_continuous, planned_start, planned_end, completed_on, actual_end, completed_by, created_by, updated_by, from_plan)
-     VALUES ('project', $1, $2, (SELECT customer_id FROM projects WHERE id = $2), $15, $16, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-             CASE WHEN $9::varchar = 'completed' THEN now() END, CASE WHEN $9::varchar = 'completed' THEN $14::bigint END, $14, $14, $17)
+    `INSERT INTO tasks (task_category_id, project_id, task_group_id, task_type_id, name, description, owner_id, estimated_minutes,
+                        status, planned_start, planned_end, completed_on, actual_end, completed_by, created_by, updated_by, from_plan)
+     VALUES ($1, $2, $12, $13, $3, $4, $5, $6, $7, $8, $9, $10,
+             CASE WHEN $7::varchar = 'completed' THEN now() END, CASE WHEN $7::varchar = 'completed' THEN $11::bigint END, $11, $11, $14)
      RETURNING id`,
-    [v.categoryId, v.projectId, v.name, v.description, v.ownerId, v.assignedTo, v.estimatedMinutes, v.priority, v.status, v.isContinuous, v.plannedStart, v.plannedEnd, v.completedOn, auth.userId, v.taskGroupId ?? null, v.taskTypeId ?? null, v.fromPlan === true],
+    [v.categoryId, v.projectId, v.name, v.description, v.ownerId, v.estimatedMinutes, v.status, v.plannedStart, v.plannedEnd, v.completedOn, auth.userId, v.taskGroupId ?? null, v.taskTypeId ?? null, v.fromPlan === true],
   );
-  await saveSubtasks(client, auth, rows[0].id, v.subtasks, v.assignedTo);
+  await addHolder(client, rows[0].id, v.assignedTo, v.status);
   await writeAudit(client, { entity: 'tasks', entityId: rows[0].id, action: 'create', userId: auth.userId, message: auditMessage ?? `Task "${v.name}" created` });
   return rows[0].id;
 }
@@ -501,15 +501,11 @@ export async function createTask(db, auth, body) {
     ownerId: body.ownerId ?? auth.userId,
     assignedTo: body.assignedTo ?? auth.userId,
     estimatedMinutes: body.estimatedMinutes ?? null,
-    priority: body.priority ?? 'medium',
     status: body.status ?? 'to_do',
-    isContinuous: body.isContinuous ?? false,
     plannedStart: body.plannedStart ?? null,
     plannedEnd: body.plannedEnd ?? null,
     completedOn: body.completedOn ?? null,
-    subtasks: body.subtasks ?? [],
   });
-  assertSubtaskDates(auth, v);
   const id = await db.tx((client) => insertTask(client, auth, v));
   return getTask(db, auth, id);
 }
@@ -519,11 +515,6 @@ export async function updateTask(db, auth, id, body) {
   if (!canEdit(auth, before)) throw forbidden('You can only change tasks you own, are assigned to or created');
   if (!canManage(auth, before) && Object.keys(body).some((k) => !ASSIGNEE_FIELDS.includes(k))) {
     throw forbidden('As the assignee you can update the status – ask the task owner to change the rest');
-  }
-  let subtasks = body.subtasks;
-  if (subtasks === undefined) {
-    const { rows } = await db.query(`SELECT id, title, assigned_to AS "assignedTo", due_date AS "dueDate", is_done AS "isDone" FROM task_subtasks WHERE task_id = $1 ORDER BY sort_order, id`, [id]);
-    subtasks = rows;
   }
   const pick = (k, col) => (body[k] !== undefined ? body[k] : before[col]);
   const v = await validate(
@@ -539,37 +530,30 @@ export async function updateTask(db, auth, id, body) {
       ownerId: pick('ownerId', 'owner_id'),
       assignedTo: pick('assignedTo', 'assigned_to'),
       estimatedMinutes: pick('estimatedMinutes', 'estimated_minutes'),
-      priority: pick('priority', 'priority') ?? 'medium',
       status: pick('status', 'status'),
-      isContinuous: pick('isContinuous', 'is_continuous'),
       plannedStart: pick('plannedStart', 'planned_start'),
       plannedEnd: pick('plannedEnd', 'planned_end'),
       // a completed task keeps its date unless a new one is sent
       completedOn: body.completedOn !== undefined ? body.completedOn : before.completed_on,
-      subtasks,
     },
     before,
   );
-  // older subtasks are left alone unless the subtasks or the task dates are part of this change
-  if (body.subtasks !== undefined || body.plannedEnd !== undefined || body.isContinuous !== undefined) assertSubtaskDates(auth, v);
   await db.tx(async (client) => {
     await client.query(
       `UPDATE tasks SET task_category_id = $2, project_id = $3,
-              customer_id = CASE WHEN $3::bigint IS DISTINCT FROM project_id THEN (SELECT customer_id FROM projects WHERE id = $3) ELSE customer_id END,
-              name = $4, description = $5, owner_id = $6, assigned_to = $7, estimated_minutes = $8, priority = $9, status = $10,
-              is_continuous = $11, planned_start = $12, planned_end = $13, completed_on = $14,
-              task_group_id = $16, task_type_id = $17,
-              actual_end = CASE WHEN $10::varchar = 'completed' THEN COALESCE(actual_end, now()) END,
-              completed_by = CASE WHEN $10::varchar <> 'completed' THEN NULL WHEN status = 'completed' THEN completed_by ELSE $15::bigint END,
-              actual_start = CASE WHEN $10::varchar <> 'to_do' THEN COALESCE(actual_start, now()) ELSE actual_start END,
-              reopen_count = reopen_count + CASE WHEN status = 'completed' AND $10::varchar <> 'completed' THEN 1 ELSE 0 END,
-              updated_by = $15
+              name = $4, description = $5, owner_id = $6, estimated_minutes = $7, status = $8,
+              planned_start = $9, planned_end = $10, completed_on = $11,
+              task_group_id = $13, task_type_id = $14,
+              actual_end = CASE WHEN $8::varchar = 'completed' THEN COALESCE(actual_end, now()) END,
+              completed_by = CASE WHEN $8::varchar <> 'completed' THEN NULL WHEN status = 'completed' THEN completed_by ELSE $12::bigint END,
+              actual_start = CASE WHEN $8::varchar <> 'to_do' THEN COALESCE(actual_start, now()) ELSE actual_start END,
+              version = version + 1,
+              updated_by = $12
         WHERE id = $1`,
-      [id, v.categoryId, v.projectId, v.name, v.description, v.ownerId, v.assignedTo, v.estimatedMinutes, v.priority, v.status, v.isContinuous, v.plannedStart, v.plannedEnd, v.completedOn, auth.userId, v.taskGroupId ?? null, v.taskTypeId ?? null],
+      [id, v.categoryId, v.projectId, v.name, v.description, v.ownerId, v.estimatedMinutes, v.status, v.plannedStart, v.plannedEnd, v.completedOn, auth.userId, v.taskGroupId ?? null, v.taskTypeId ?? null],
     );
-    if (body.subtasks !== undefined) await saveSubtasks(client, auth, id, v.subtasks, v.assignedTo);
-    // the subtasks always go with the task's assignee
-    else await client.query(`UPDATE task_subtasks SET assigned_to = $2 WHERE task_id = $1 AND assigned_to IS DISTINCT FROM $2`, [id, v.assignedTo]);
+    if (v.assignedTo !== before.assigned_to) await reassign(client, id, v.assignedTo, v.status);
+    if (v.status !== before.status) await followStatus(client, id, v.status);
     await writeAudit(client, {
       entity: 'tasks',
       entityId: id,
@@ -615,6 +599,119 @@ async function ongoingProject(db, auth, projectId) {
   return p;
 }
 
+<<<<<<< HEAD
+=======
+/** The template tasks of the project's type, with the estimate for this project and how often each is already a task. */
+export async function projectTemplates(db, auth, projectId) {
+  await ongoingProject(db, auth, projectId);
+  const { rows } = await db.query(
+    `SELECT tt.id, tt.task_title, tt.description, tt.effort_percentage, tt.task_group_id, g.name AS task_group_name,
+            tt.task_type_id, ty.name AS task_type_name,
+            CASE WHEN p.estimated_hours > 0 AND tt.effort_percentage > 0
+                 THEN ROUND(p.estimated_hours * 60 * tt.effort_percentage / 100)::int END AS estimated_minutes,
+            COALESCE((SELECT array_agg(l.name ORDER BY l.display_order, l.name) FROM project_type_task_template_roles r
+                        JOIN parameter_values l ON l.id = r.role_id WHERE r.task_template_id = tt.id), '{}') AS skills,
+            COALESCE((SELECT array_agg(r.role_id) FROM project_type_task_template_roles r WHERE r.task_template_id = tt.id), '{}') AS skill_ids,
+            (SELECT count(*)::int FROM tasks t WHERE t.project_id = p.id AND t.is_active AND lower(t.name) = lower(tt.task_title)) AS existing
+       FROM projects p
+       JOIN project_type_task_templates tt ON tt.project_type_id = p.project_type_id
+       JOIN task_groups g ON g.id = tt.task_group_id
+       JOIN task_types ty ON ty.id = tt.task_type_id
+      WHERE p.id = $1
+      ORDER BY g.name, tt.sort_order, tt.task_title`,
+    [projectId],
+  );
+  // project people (owner + members, active) and their skills (Users → Skills)
+  const { rows: people } = await db.query(
+    `SELECT u.id, u.name,
+            COALESCE(json_agg(json_build_object('id', l.id, 'name', l.name)) FILTER (WHERE l.id IS NOT NULL), '[]') AS skills
+       FROM users u
+       LEFT JOIN user_skills us ON us.user_id = u.id
+       LEFT JOIN parameter_values l ON l.id = us.skill_id
+      WHERE u.is_active
+        AND (u.id = (SELECT owner_id FROM projects WHERE id = $1)
+             OR u.id IN (SELECT pm.user_id FROM project_members pm WHERE pm.project_id = $1))
+      GROUP BY u.id, u.name ORDER BY u.name`,
+    [projectId],
+  );
+  // people who have one of the task's skills – most matching skills first
+  const matchesFor = (skillIds) =>
+    people
+      .map((p) => {
+        const need = skillIds.map(Number);
+        const shared = p.skills.filter((sk) => need.includes(Number(sk.id)));
+        return { userId: p.id, name: p.name, skills: shared.map((sk) => sk.name), count: shared.length };
+      })
+      .filter((m) => m.count > 0)
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .map(({ userId, name, skills }) => ({ userId, name, skills }));
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.task_title,
+    description: r.description,
+    effortPercentage: r.effort_percentage,
+    taskGroupId: r.task_group_id,
+    taskGroupName: r.task_group_name,
+    taskTypeId: r.task_type_id,
+    taskTypeName: r.task_type_name,
+    estimatedMinutes: r.estimated_minutes,
+    skills: r.skills,
+    existing: r.existing,
+    matches: matchesFor(r.skill_ids),
+  }));
+}
+
+/**
+ * Creates tasks on the project from the picked template tasks. Common values (owner, dates)
+ * apply to all; each picked task can have its own assignee. All or nothing.
+ */
+export async function createFromTemplate(db, auth, body) {
+  await ongoingProject(db, auth, body.projectId);
+  const { rows: cat } = await db.query(`SELECT id FROM task_categories WHERE is_project AND is_active ORDER BY display_order, id LIMIT 1`);
+  if (!cat[0]) throw badRequest('Add an active task category that needs a project (Task → Task Category) first');
+  const templates = await projectTemplates(db, auth, body.projectId);
+  const values = [];
+  for (const [i, item] of body.items.entries()) {
+    const tpl = templates.find((t) => t.id === item.templateId);
+    if (!tpl) throw badRequest(`Task ${i + 1} is not in this project's template`, [{ field: `items.${i}.templateId`, message: 'not in the template' }]);
+    // each picked task has its own people / plan; anything not sent falls back to the common value
+    const own = (k, fallback) => (item[k] !== undefined ? item[k] : body[k] !== undefined ? body[k] : fallback);
+    try {
+      values.push(
+        await validate(db, auth, {
+          name: tpl.title,
+          description: tpl.description,
+          categoryId: cat[0].id,
+          projectId: body.projectId,
+          taskGroupId: tpl.taskGroupId,
+          taskTypeId: tpl.taskTypeId,
+          ownerId: own('ownerId', auth.userId),
+          assignedTo: own('assignedTo', auth.userId),
+          estimatedMinutes: item.estimatedMinutes !== undefined ? item.estimatedMinutes : tpl.estimatedMinutes,
+          status: 'to_do',
+          plannedStart: own('plannedStart', null),
+          plannedEnd: own('plannedEnd', null),
+          completedOn: null,
+        }),
+      );
+    } catch (err) {
+      // say which picked task is wrong
+      if (err.statusCode === 400 || err.statusCode === 403) {
+        err.message = `${tpl.title}: ${err.message}`;
+        err.details = (err.details ?? []).map((d) => ({ ...d, field: `items.${i}.${d.field}` }));
+      }
+      throw err;
+    }
+  }
+  const ids = await db.tx(async (client) => {
+    const out = [];
+    for (const v of values) out.push(await insertTask(client, auth, v, `Task "${v.name}" created from the project template`));
+    return out;
+  });
+  return { created: ids.length, ids };
+}
+
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
 /**
  * The project's planned task groups, for "add tasks from the plan": each group's periods and the tasks it gets –
  * one task named after the group.
@@ -625,11 +722,23 @@ export async function planTasks(db, auth, projectId) {
   const [project, groups, weeks, names] = await Promise.all([
     db.query(`SELECT estimated_hours FROM projects WHERE id = $1`, [projectId]),
     db.query(
-      `SELECT g.id, g.name, e.effort_percentage FROM project_task_group_estimates e JOIN task_groups g ON g.id = e.task_group_id
+      `SELECT g.id, g.name, e.effort_percentage FROM project_effort_estimates e JOIN task_groups g ON g.id = e.task_group_id
         WHERE e.project_id = $1 AND e.effort_percentage > 0 ORDER BY e.effort_percentage DESC, g.name`,
       [projectId],
     ),
+<<<<<<< HEAD
     db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_week_plans WHERE project_id = $1`, [projectId]),
+=======
+    db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_plan_weeks WHERE project_id = $1`, [projectId]),
+    db.query(
+      `SELECT tt.id, tt.task_title, tt.description, tt.task_group_id, tt.task_type_id, ty.name AS task_type_name, tt.effort_percentage
+         FROM projects p
+         JOIN project_type_task_templates tt ON tt.project_type_id = p.project_type_id
+         JOIN task_types ty ON ty.id = tt.task_type_id
+        WHERE p.id = $1 ORDER BY tt.sort_order, tt.task_title`,
+      [projectId],
+    ),
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
     db.query(`SELECT lower(name) AS name FROM tasks WHERE project_id = $1 AND is_active`, [projectId]),
   ]);
   const periods = periodsOf(weeks.rows);
@@ -689,13 +798,10 @@ export async function createFromPlan(db, auth, body) {
           ownerId,
           assignedTo: other.get(t.title.toLowerCase()) ?? item.assignedTo ?? body.assignedTo ?? ownerId,
           estimatedMinutes: t.estimatedMinutes,
-          priority: item.priority ?? 'medium',
           status: 'to_do',
-          isContinuous: false,
           plannedStart: rows[0].s.toISOString(),
           plannedEnd: rows[0].e.toISOString(),
           completedOn: null,
-          subtasks: [],
           fromPlan: true,
         }),
       );
@@ -709,7 +815,7 @@ export async function createFromPlan(db, auth, body) {
   return { created: ids.length, skipped, ids };
 }
 
-/** Activity tab: the task's history (created, status changes, edits, subtasks), newest first. */
+/** Activity tab: the task's history (created, status changes, edits), newest first. */
 export async function taskActivity(db, auth, id) {
   const task = await loadTask(db, auth, id); // existence + scope
   if (isMasked(auth, task)) return []; // a personal task: no history
@@ -755,33 +861,14 @@ export async function taskEfforts(db, auth, id) {
   };
 }
 
-/**
- * Tick a subtask done / not done. Allowed for whoever can edit the task, and for the person the
- * subtask is assigned to (who may not be able to change anything else on the task).
- */
-export async function setSubtaskDone(db, auth, id, subtaskId, isDone) {
-  const task = await loadTask(db, auth, id);
-  const { rows } = await db.query(`SELECT id, title, assigned_to FROM task_subtasks WHERE id = $1 AND task_id = $2`, [subtaskId, id]);
-  const sub = rows[0];
-  if (!sub) throw notFound('Subtask');
-  if (!canEdit(auth, task) && sub.assigned_to !== auth.userId) throw forbidden('You can only update subtasks assigned to you');
-  await db.tx(async (client) => {
-    await client.query(`UPDATE task_subtasks SET is_done = $2, updated_by = $3 WHERE id = $1`, [subtaskId, isDone, auth.userId]);
-    await writeAudit(client, { entity: 'tasks', entityId: id, action: 'update', userId: auth.userId, message: `Subtask "${sub.title}" ${isDone ? 'done' : 'reopened'}` });
-  });
-  return getTask(db, auth, id);
-}
-
 export async function deleteTask(db, auth, id) {
   const before = await loadTask(db, auth, id);
   if (!canDelete(auth, before)) throw forbidden('Only the task owner or the person who created it can delete it');
   const { rows } = await db.query(
-    `SELECT (SELECT count(*)::int FROM timesheets WHERE task_id = $1) AS entries,
-            (SELECT count(*)::int FROM tasks WHERE parent_task_id = $1 OR predecessor_task_id = $1) AS linked`,
+    `SELECT (SELECT count(*)::int FROM timesheets WHERE task_id = $1) AS entries`,
     [id],
   );
   if (rows[0].entries) throw badRequest(`Time is logged on this task (${rows[0].entries} entr${rows[0].entries === 1 ? 'y' : 'ies'}) – it cannot be deleted`);
-  if (rows[0].linked) throw badRequest('Other tasks depend on this task – it cannot be deleted');
   await db.tx(async (client) => {
     await client.query(`DELETE FROM tasks WHERE id = $1`, [id]);
     await writeAudit(client, { entity: 'tasks', entityId: id, action: 'delete', userId: auth.userId, message: `Task "${before.name}" deleted` });

@@ -1,25 +1,21 @@
 import { writeAudit } from '../../utils/audit.js';
-import { badRequest, forbidden, notFound } from '../../utils/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../../utils/errors.js';
 import { exact } from '../../utils/number.js';
 import { escapeLike, idList, WhereBuilder } from '../../utils/query.js';
 import { sqlToday } from '../../utils/time.js';
 import { GRANTED } from '../taskaccess/taskaccess.service.js';
 
 /*
- * Timesheet: users log time against the projects they are assigned to (owner or member).
- * Only task groups that have a share in the project estimate can be used, so every hour
- * lands in a group the project Analysis tracks (allocated % vs actual hours).
- * Each entry has a task category: a project category needs the project (rules above);
- * other categories (Personal, Activity …) have no project, and the task group / type are optional.
+ * Timesheet: every entry is time on a task the person works on. An entry stores only who, when, how long, what was done and which
+ * task: the project, the task type and the category are read from the task.
  */
 
 const SORT_COLUMNS = { workDate: 't.work_date', minutes: 't.minutes', project: 'p.title', createdAt: 't.created_at' };
 const DAY_LIMIT = 24 * 60;
-// a user works on a task when it is assigned to them or one of its subtasks is – only they log time on it
-const WORKS_ON = (t, user) =>
-  `(${t}.assigned_to = ${user} OR EXISTS (SELECT 1 FROM task_subtasks ws WHERE ws.task_id = ${t}.id AND ws.assigned_to = ${user}))`;
+// a user works on a task when they are one of its members – only they log time on it
+const WORKS_ON = (t, user) => `EXISTS (SELECT 1 FROM task_members wm WHERE wm.task_id = ${t}.id AND wm.user_id = ${user})`;
 
-/** Time on a task: only by the person it (or one of its subtasks) is assigned to. A link an edited entry already has stays. */
+/** Time on a task: only by the person it is assigned to. A link an edited entry already has stays. */
 async function assertWorksOn(db, userId, taskId, keepTaskId) {
   if (!taskId || taskId === keepTaskId) return;
   const { rows } = await db.query(`SELECT 1 FROM tasks t WHERE t.id = $1 AND ${WORKS_ON('t', '$2')}`, [taskId, userId]);
@@ -27,18 +23,18 @@ async function assertWorksOn(db, userId, taskId, keepTaskId) {
 }
 
 const SELECT = `
-  SELECT t.id, t.user_id, u.name AS user_name, t.work_date, t.project_id, p.code AS project_code, p.title AS project_title,
-         t.task_category_id, c.name AS category_name, COALESCE(c.is_project, true) AS is_project_category,
+  SELECT t.id, t.user_id, u.name AS user_name, t.work_date, tk.project_id, p.code AS project_code, p.title AS project_title,
+         tk.task_category_id, c.name AS category_name, COALESCE(c.is_project, true) AS is_project_category,
          COALESCE(c.is_private, false) AS is_private_category,
-         t.task_type_id, tt.name AS task_type_name, tt.task_group_id, g.name AS task_group_name,
-         t.task_id, tk.name AS task_name, t.minutes, t.comment, t.is_billable, t.created_at, t.updated_at
+         tk.task_type_id, tt.name AS task_type_name, tt.task_group_id, g.name AS task_group_name,
+         t.task_id, tk.name AS task_name, t.minutes, t.comment, t.is_billable, t.from_board, t.created_at, t.updated_at
     FROM timesheets t
     JOIN users u ON u.id = t.user_id
-    LEFT JOIN projects p ON p.id = t.project_id
-    LEFT JOIN task_categories c ON c.id = t.task_category_id
-    LEFT JOIN task_types tt ON tt.id = t.task_type_id
-    LEFT JOIN task_groups g ON g.id = tt.task_group_id
-    LEFT JOIN tasks tk ON tk.id = t.task_id`;
+    JOIN tasks tk ON tk.id = t.task_id
+    LEFT JOIN projects p ON p.id = tk.project_id
+    LEFT JOIN task_categories c ON c.id = tk.task_category_id
+    LEFT JOIN task_types tt ON tt.id = tk.task_type_id
+    LEFT JOIN task_groups g ON g.id = tt.task_group_id`;
 
 const toDto = (r) => ({
   id: r.id,
@@ -59,8 +55,10 @@ const toDto = (r) => ({
   taskName: r.task_name,
   minutes: r.minutes,
   hours: exact(r.minutes / 60),
-  comment: r.comment,
+  comment: r.comment ?? r.task_name, // time logged on the board without a note shows the task
   isBillable: r.is_billable,
+  source: r.from_board ? 'flow' : 'manual', // 'flow' = logged in Task Management, read-only here
+  flowTaskId: r.from_board ? r.task_id : null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -97,7 +95,7 @@ function applyScope(where, auth, scope, people = []) {
     return;
   }
   // projects the user manages = the projects they own
-  const managed = `t.project_id IN (SELECT p2.id FROM projects p2 WHERE p2.owner_id = $?)`;
+  const managed = `tk.project_id IN (SELECT p2.id FROM projects p2 WHERE p2.owner_id = $?)`;
   if (auth.role.dataScope === 'team') {
     where.add(
       `(t.user_id = $? OR ${managed}
@@ -121,11 +119,11 @@ function buildFilters(auth, q) {
     where.add(`(p.title ILIKE $? OR p.code ILIKE $? OR ((t.comment ILIKE $? OR tt.name ILIKE $?) AND NOT ${maskedSql(auth)}) OR c.name ILIKE $?)`, s, s, s, s, s);
   }
   const projectIds = idList(q.projectId);
-  if (projectIds.length) where.add('t.project_id = ANY($?)', projectIds);
+  if (projectIds.length) where.add('tk.project_id = ANY($?)', projectIds);
   const userIds = idList(q.userId);
   if (userIds.length) where.add('t.user_id = ANY($?)', userIds);
   const categoryIds = idList(q.categoryId);
-  if (categoryIds.length) where.add('t.task_category_id = ANY($?)', categoryIds);
+  if (categoryIds.length) where.add('tk.task_category_id = ANY($?)', categoryIds);
   const groupIds = idList(q.taskGroupId);
   if (groupIds.length) where.add('tt.task_group_id = ANY($?)', groupIds);
   if (q.isBillable !== undefined) where.add('t.is_billable = $?', q.isBillable);
@@ -134,7 +132,57 @@ function buildFilters(auth, q) {
   return where;
 }
 
+/**
+ * One row per task instead of one per entry, with the time collected on it in the chosen period (the filters decide which entries count).
+ * One row per task.
+ * Per person (on the team view each person has their own row). Someone else's Personal time is one row, details hidden.
+ */
+const groupKey = (auth) =>
+  `CASE WHEN ${maskedSql(auth)} THEN 'p'
+        ELSE 't' || t.task_id END`;
+const GROUP_JOINS = `FROM timesheets t JOIN tasks tk ON tk.id = t.task_id LEFT JOIN projects p ON p.id = tk.project_id LEFT JOIN task_categories c ON c.id = tk.task_category_id LEFT JOIN task_types tt ON tt.id = tk.task_type_id`;
+
+async function listByTask(db, auth, q) {
+  const key = groupKey(auth);
+  const where = buildFilters(auth, q);
+  const limit = where.param(q.pageSize);
+  const offset = where.param((q.page - 1) * q.pageSize);
+  const { rows } = await db.query(
+    `WITH g AS (
+       SELECT t.user_id, ${key} AS gkey, sum(t.minutes)::int AS group_minutes, count(*)::int AS entries, min(t.work_date) AS first_date, max(t.work_date) AS last_date,
+              bool_and(t.is_billable) AS all_billable, (array_agg(t.id ORDER BY t.work_date DESC, t.id DESC))[1] AS last_id
+         ${GROUP_JOINS} ${where.toSql()}
+        GROUP BY t.user_id, ${key}
+     )
+     SELECT g.group_minutes, g.entries, g.first_date, g.last_date, g.all_billable, x.*
+       FROM g JOIN (${SELECT}) x ON x.id = g.last_id 
+      ORDER BY g.last_date DESC, g.last_id DESC LIMIT ${limit} OFFSET ${offset}`,
+    where.params,
+  );
+  const w2 = buildFilters(auth, q);
+  const { rows: totals } = await db.query(
+    `SELECT count(*)::int AS total, COALESCE(sum(s.m), 0)::int AS minutes
+       FROM (SELECT sum(t.minutes) AS m ${GROUP_JOINS} ${w2.toSql()} GROUP BY t.user_id, ${key}) s`,
+    w2.params,
+  );
+  const items = rows.map((r) => {
+    const dto = toListDto(auth)({ ...r, minutes: r.group_minutes });
+    const taskTitle = dto.taskName;
+    return {
+      ...dto,
+      workDate: r.last_date,
+      entries: r.entries,
+      firstDate: r.first_date,
+      lastDate: r.last_date,
+      isBillable: r.all_billable,
+      ...(dto.isMasked ? {} : { taskName: taskTitle, comment: r.from_board ? dto.taskName : dto.comment }),
+    };
+  });
+  return { items, total: totals[0].total, totalMinutes: totals[0].minutes, totalHours: hrs(totals[0].minutes), page: q.page, pageSize: q.pageSize };
+}
+
 export async function listTimesheets(db, auth, q) {
+  if (q.groupBy === 'task') return listByTask(db, auth, q);
   const where = buildFilters(auth, q);
   const sort = SORT_COLUMNS[q.sortBy] ?? SORT_COLUMNS.workDate;
   const dir = q.sortDir === 'asc' ? 'ASC' : 'DESC';
@@ -145,8 +193,7 @@ export async function listTimesheets(db, auth, q) {
   const countWhere = buildFilters(auth, q);
   const { rows: totals } = await db.query(
     `SELECT count(*)::int AS total, COALESCE(SUM(t.minutes), 0)::int AS minutes
-       FROM timesheets t LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN task_categories c ON c.id = t.task_category_id
-            LEFT JOIN task_types tt ON tt.id = t.task_type_id ${countWhere.toSql()}`,
+       ${GROUP_JOINS} ${countWhere.toSql()}`,
     countWhere.params,
   );
   return { items: rows.map(toListDto(auth)), total: totals[0].total, totalMinutes: totals[0].minutes, totalHours: hrs(totals[0].minutes), page: q.page, pageSize: q.pageSize };
@@ -162,10 +209,10 @@ export async function timesheetSummary(db, auth, q) {
     `SELECT COALESCE(SUM(t.minutes), 0)::int AS total,
             COALESCE(SUM(t.minutes) FILTER (WHERE t.is_billable), 0)::int AS billable,
             COALESCE(SUM(t.minutes) FILTER (WHERE t.work_date = ${today}), 0)::int AS today,
-            count(DISTINCT t.project_id)::int AS projects,
-            count(DISTINCT t.project_id) FILTER (WHERE p.customer_id IS NOT NULL)::int AS client_projects,
+            count(DISTINCT tk.project_id)::int AS projects,
+            count(DISTINCT tk.project_id) FILTER (WHERE p.customer_id IS NOT NULL)::int AS client_projects,
             count(DISTINCT t.work_date)::int AS days
-       FROM timesheets t LEFT JOIN projects p ON p.id = t.project_id ${where.toSql()}`,
+       FROM timesheets t JOIN tasks tk ON tk.id = t.task_id LEFT JOIN projects p ON p.id = tk.project_id ${where.toSql()}`,
     where.params,
   );
   const r = rows[0];
@@ -181,80 +228,33 @@ export async function timesheetSummary(db, auth, q) {
   };
 }
 
-/**
- * What the Log time form offers: the user's assigned projects, and per project the task groups
- * of its estimate (share > 0), their task types and the project's tasks.
- */
+/** What the Log time form offers: the tasks the person works on (a member of), with their project and category. */
 export async function timesheetOptions(db, auth) {
-  const { rows: projects } = await db.query(
-    `SELECT p.id, p.code, p.title, p.status
-       FROM projects p
-      WHERE p.status <> 'cancelled'
-        AND (p.owner_id = $1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1))
-      ORDER BY p.title`,
+  const { rows } = await db.query(
+    `SELECT t.id, t.name, t.status, t.project_id, p.code AS project_code, p.title AS project_title, t.task_category_id, c.name AS category_name
+       FROM tasks t
+       LEFT JOIN projects p ON p.id = t.project_id
+       LEFT JOIN task_categories c ON c.id = t.task_category_id
+      WHERE t.is_active AND ${WORKS_ON('t', '$1')} AND (p.id IS NULL OR p.status <> 'cancelled')
+      ORDER BY (t.status = 'completed'), p.title NULLS LAST, t.display_order, t.name`,
     [auth.userId],
   );
-  const ids = projects.map((p) => p.id);
-  if (!ids.length) return [];
-  const [groups, types, tasks] = await Promise.all([
-    db.query(
-      `SELECT e.project_id, g.id, g.name, e.effort_percentage
-         FROM project_task_group_estimates e JOIN task_groups g ON g.id = e.task_group_id
-        WHERE e.project_id = ANY($1) AND e.effort_percentage > 0
-        ORDER BY e.effort_percentage DESC, g.name`,
-      [ids],
-    ),
-    db.query(`SELECT id, name, task_group_id FROM task_types WHERE is_active ORDER BY name`),
-    db.query(
-      // only the tasks the user works on
-      `SELECT id, project_id, name, task_group_id, task_type_id FROM tasks t
-        WHERE project_id = ANY($1) AND parent_task_id IS NULL AND ${WORKS_ON('t', '$2')} ORDER BY display_order, name`,
-      [ids, auth.userId],
-    ),
-  ]);
-  return projects.map((p) => ({
-    id: p.id,
-    code: p.code,
-    title: p.title,
-    taskGroups: groups.rows
-      .filter((g) => g.project_id === p.id)
-      .map((g) => ({
-        id: g.id,
-        name: g.name,
-        effortPercentage: Number(g.effort_percentage),
-        taskTypes: types.rows.filter((t) => t.task_group_id === g.id).map((t) => ({ id: t.id, name: t.name })),
-      })),
-    tasks: tasks.rows
-      .filter((t) => t.project_id === p.id)
-      .map((t) => ({ id: t.id, name: t.name, taskGroupId: t.task_group_id, taskTypeId: t.task_type_id })),
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    status: r.status,
+    projectId: r.project_id,
+    projectCode: r.project_code,
+    projectTitle: r.project_title,
+    categoryId: r.task_category_id,
+    categoryName: r.category_name,
   }));
 }
 
-/**
- * The rest of the Log time form: task categories, every active task group with its types (for entries
- * without a project) and the user's own tasks that are not on a project (assigned to / owned / created).
- */
-export async function timesheetMeta(db, auth) {
-  const [cats, groups, types, tasks] = await Promise.all([
-    db.query(
-      `SELECT c.id, c.name, c.is_project,
-              ARRAY(SELECT l.task_group_id FROM task_category_groups l WHERE l.task_category_id = c.id ORDER BY l.task_group_id)::int[] AS task_group_ids
-         FROM task_categories c WHERE c.is_active ORDER BY c.display_order, c.name`,
-    ),
-    db.query(`SELECT id, name FROM task_groups ORDER BY name`),
-    db.query(`SELECT id, name, task_group_id FROM task_types WHERE is_active ORDER BY name`),
-    db.query(
-      `SELECT id, name, task_category_id, task_group_id, task_type_id FROM tasks
-        WHERE is_active AND project_id IS NULL AND ${WORKS_ON('tasks', '$1')}
-        ORDER BY (status = 'completed'), name`,
-      [auth.userId],
-    ),
-  ]);
-  return {
-    categories: cats.rows.map((c) => ({ id: c.id, name: c.name, isProject: c.is_project, taskGroupIds: c.task_group_ids })),
-    taskGroups: groups.rows.map((g) => ({ id: g.id, name: g.name, taskTypes: types.rows.filter((t) => t.task_group_id === g.id).map((t) => ({ id: t.id, name: t.name })) })),
-    tasks: tasks.rows.map((t) => ({ id: t.id, name: t.name, categoryId: t.task_category_id, taskGroupId: t.task_group_id, taskTypeId: t.task_type_id })),
-  };
+/** Categories for the list filter. */
+export async function timesheetCategories(db) {
+  const { rows } = await db.query(`SELECT id, name FROM task_categories WHERE is_active ORDER BY display_order, name`);
+  return rows;
 }
 
 /** Projects for the list filter: every project for the Super Admin, otherwise the ones the user is on. */
@@ -270,26 +270,17 @@ export async function filterProjects(db, auth) {
   return rows;
 }
 
-/** The entry's category (a project category when none is given – older clients). */
-async function entryCategory(db, categoryId) {
-  const { rows } = categoryId
-    ? await db.query(`SELECT id, is_project, is_active FROM task_categories WHERE id = $1`, [categoryId])
-    : await db.query(`SELECT id, is_project, is_active FROM task_categories WHERE is_project ORDER BY is_active DESC, display_order, id LIMIT 1`);
-  if (!rows[0]) throw badRequest('Select the task category', [{ field: 'categoryId', message: 'does not exist' }]);
-  return rows[0];
-}
-
 /**
- * Checks the category, then for project time the project assignment, the task group rule and the task;
- * for other time the optional group / type and the user's own task; and the daily limit.
- * Sets body.categoryId, and clears the project / billable for time that is not project time.
+ * Checks the task (one the person works on, on a project that is not cancelled) and the daily limit.
+ * Sets body.isBillable: time on a project task follows the project, other time is not billable.
  */
 async function validateEntry(db, auth, userId, body, excludeId = null) {
-  const cat = await entryCategory(db, body.categoryId);
-  body.categoryId = cat.id;
+  if (!body.taskId) throw badRequest('Select the task', [{ field: 'taskId', message: 'is required' }]);
+  const { rows: task } = await db.query(`SELECT t.id, t.project_id, p.status, p.is_billable FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [body.taskId]);
+  if (!task[0]) throw badRequest('Task does not exist', [{ field: 'taskId', message: 'does not exist' }]);
   await assertWorksOn(db, userId, body.taskId, body.keepTaskId);
-  if (cat.is_project) await validateProjectTime(db, userId, body);
-  else await validateOtherTime(db, userId, body, cat.id);
+  if (task[0].status === 'cancelled') throw badRequest('This project is cancelled', [{ field: 'taskId', message: 'the project is cancelled' }]);
+  body.isBillable = task[0].project_id ? (body.isBillable ?? task[0].is_billable) : false;
 
   const { rows: day } = await db.query(
     `SELECT COALESCE(SUM(minutes), 0)::int AS minutes FROM timesheets WHERE user_id = $1 AND work_date = $2 AND id IS DISTINCT FROM $3`,
@@ -302,82 +293,17 @@ async function validateEntry(db, auth, userId, body, excludeId = null) {
   return minutes;
 }
 
-/** Personal / Activity … time: no project, not billable; task group and type required; the task must be one of the user's own of that category. */
-async function validateOtherTime(db, userId, body, categoryId) {
-  body.projectId = null;
-  body.isBillable = false;
-  if (!body.taskGroupId) throw badRequest('Select the task group', [{ field: 'taskGroupId', message: 'is required' }]);
-  if (!body.taskTypeId) throw badRequest('Select the task type', [{ field: 'taskTypeId', message: 'is required' }]);
-  if (body.taskTypeId) {
-    const { rows: type } = await db.query(`SELECT task_group_id FROM task_types WHERE id = $1`, [body.taskTypeId]);
-    if (!type[0]) throw badRequest('Task type does not exist', [{ field: 'taskTypeId', message: 'does not exist' }]);
-    if (body.taskGroupId && type[0].task_group_id !== body.taskGroupId) {
-      throw badRequest('The task type is not in the selected task group', [{ field: 'taskTypeId', message: 'not in the task group' }]);
-    }
-  } else if (body.taskGroupId) {
-    throw badRequest('Select the task type of the group', [{ field: 'taskTypeId', message: 'is required with a task group' }]);
-  }
-  // the group must be one of the category's task groups (a category without groups takes any)
-  if (body.taskGroupId) {
-    const [{ rows: allowed }, { rows: links }] = await Promise.all([
-      db.query(`SELECT task_group_id FROM task_category_groups WHERE task_category_id = $1`, [categoryId]),
-      db.query(`SELECT 1 FROM task_category_groups WHERE task_group_id = $1 LIMIT 1`, [body.taskGroupId]),
-    ]);
-    // a group that no category has claimed yet is open to every category
-    if (allowed.length && links.length && !allowed.some((r) => Number(r.task_group_id) === body.taskGroupId)) {
-      throw badRequest('This task group is not set up for the category', [{ field: 'taskGroupId', message: 'not a group of the category' }]);
-    }
-  }
-  if (body.taskId) {
-    const { rows: task } = await db.query(`SELECT project_id, task_category_id FROM tasks WHERE id = $1`, [body.taskId]);
-    const t = task[0];
-    if (!t || t.project_id || t.task_category_id !== categoryId) throw badRequest('The task is not in this category', [{ field: 'taskId', message: 'not in the category' }]);
-  }
-}
-
-/** Project time: an assigned project, a task group of its estimate with a type, and optionally a task of the project. */
-async function validateProjectTime(db, userId, body) {
-  if (!body.projectId) throw badRequest('Select the project', [{ field: 'projectId', message: 'is required' }]);
-  if (!body.taskTypeId) throw badRequest('Select the task type', [{ field: 'taskTypeId', message: 'is required' }]);
-  const { rows: proj } = await db.query(
-    `SELECT p.id, p.status, p.is_billable,
-            (p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $2)) AS assigned
-       FROM projects p WHERE p.id = $1`,
-    [body.projectId, userId],
-  );
-  if (!proj[0]) throw badRequest('Project does not exist', [{ field: 'projectId', message: 'does not exist' }]);
-  if (!proj[0].assigned) throw badRequest('You are not assigned to this project', [{ field: 'projectId', message: 'not assigned' }]);
-  if (proj[0].status === 'cancelled') throw badRequest('This project is cancelled', [{ field: 'projectId', message: 'is cancelled' }]);
-  body.isBillable = proj[0].is_billable; // billable is a project setting
-
-  const { rows: type } = await db.query(
-    `SELECT tt.id, tt.task_group_id, g.name AS group_name,
-            (SELECT e.effort_percentage FROM project_task_group_estimates e WHERE e.project_id = $2 AND e.task_group_id = tt.task_group_id) AS effort
-       FROM task_types tt JOIN task_groups g ON g.id = tt.task_group_id WHERE tt.id = $1`,
-    [body.taskTypeId, body.projectId],
-  );
-  if (!type[0]) throw badRequest('Task type does not exist', [{ field: 'taskTypeId', message: 'does not exist' }]);
-  if (body.taskGroupId && type[0].task_group_id !== body.taskGroupId) {
-    throw badRequest('The task type is not in the selected task group', [{ field: 'taskTypeId', message: 'not in the task group' }]);
-  }
-  if (!(Number(type[0].effort) > 0)) {
-    throw badRequest(`"${type[0].group_name}" is not in this project's estimate – pick a task group of the project`, [
-      { field: 'taskGroupId', message: 'not in the project estimate' },
-    ]);
-  }
-
-  if (body.taskId) {
-    const { rows: task } = await db.query(`SELECT project_id FROM tasks WHERE id = $1`, [body.taskId]);
-    if (!task[0] || task[0].project_id !== body.projectId) throw badRequest('The task is not part of this project', [{ field: 'taskId', message: 'not in the project' }]);
-  }
-}
-
 async function loadOwn(db, auth, id) {
   const { rows } = await db.query(`${SELECT} WHERE t.id = $1`, [id]);
   if (!rows[0]) throw notFound('Time entry');
   if (rows[0].user_id !== auth.userId && !auth.isSuperAdmin) throw forbidden('You can only change your own time entries');
   return rows[0];
 }
+
+/** Time logged in Task Management is changed there, so the Timesheet and the flow task never disagree. */
+const assertEditable = (row) => {
+  if (row.from_board) throw conflict('This time was logged in Task Management - change it there');
+};
 
 export async function getTimesheet(db, auth, id) {
   return toDto(await loadOwn(db, auth, id));
@@ -387,9 +313,9 @@ export async function createTimesheet(db, auth, body) {
   const minutes = await validateEntry(db, auth, auth.userId, body);
   const id = await db.tx(async (client) => {
     const { rows } = await client.query(
-      `INSERT INTO timesheets (user_id, work_date, task_category_id, project_id, task_type_id, task_id, minutes, comment, is_billable, created_by, updated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1, $1) RETURNING id`,
-      [auth.userId, body.workDate, body.categoryId, body.projectId ?? null, body.taskTypeId ?? null, body.taskId ?? null, minutes, body.comment.trim(), body.isBillable ?? true],
+      `INSERT INTO timesheets (user_id, work_date, task_id, minutes, comment, is_billable, created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $1, $1) RETURNING id`,
+      [auth.userId, body.workDate, body.taskId, minutes, body.comment.trim(), body.isBillable],
     );
     await writeAudit(client, { entity: 'timesheets', entityId: rows[0].id, action: 'create', userId: auth.userId, message: `${minutes} mins logged` });
     return rows[0].id;
@@ -399,12 +325,9 @@ export async function createTimesheet(db, auth, body) {
 
 export async function updateTimesheet(db, auth, id, body) {
   const before = await loadOwn(db, auth, id);
+  assertEditable(before);
   const merged = {
     workDate: body.workDate ?? before.work_date,
-    categoryId: body.categoryId ?? before.task_category_id,
-    projectId: body.projectId === undefined ? before.project_id : body.projectId,
-    taskGroupId: body.taskGroupId,
-    taskTypeId: body.taskTypeId === undefined ? before.task_type_id : body.taskTypeId,
     taskId: body.taskId === undefined ? before.task_id : body.taskId,
     keepTaskId: before.task_id, // an edit may keep a task link it already has
     minutes: body.minutes ?? before.minutes,
@@ -414,10 +337,8 @@ export async function updateTimesheet(db, auth, id, body) {
   const minutes = await validateEntry(db, auth, before.user_id, merged, id);
   await db.tx(async (client) => {
     await client.query(
-      `UPDATE timesheets SET work_date = $2, project_id = $3, task_type_id = $4, task_id = $5, minutes = $6, comment = $7, is_billable = $8, updated_by = $9,
-              task_category_id = $10
-        WHERE id = $1`,
-      [id, merged.workDate, merged.projectId ?? null, merged.taskTypeId ?? null, merged.taskId ?? null, minutes, merged.comment.trim(), merged.isBillable, auth.userId, merged.categoryId],
+      `UPDATE timesheets SET work_date = $2, task_id = $3, minutes = $4, comment = $5, is_billable = $6, updated_by = $7 WHERE id = $1`,
+      [id, merged.workDate, merged.taskId, minutes, merged.comment.trim(), merged.isBillable, auth.userId],
     );
     await writeAudit(client, { entity: 'timesheets', entityId: id, action: 'update', userId: auth.userId });
   });
@@ -425,7 +346,7 @@ export async function updateTimesheet(db, auth, id, body) {
 }
 
 export async function deleteTimesheet(db, auth, id) {
-  await loadOwn(db, auth, id);
+  assertEditable(await loadOwn(db, auth, id));
   await db.tx(async (client) => {
     await client.query(`DELETE FROM timesheets WHERE id = $1`, [id]);
     await writeAudit(client, { entity: 'timesheets', entityId: id, action: 'delete', userId: auth.userId });

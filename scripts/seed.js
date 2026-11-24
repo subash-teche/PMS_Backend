@@ -14,7 +14,6 @@ const ROLES = [
   ['PROJECT_MANAGER', 'Project Manager', 2, 'internal', 'team', false],
   ['EMPLOYEE', 'Employee', 5, 'internal', 'own', true],
   ['CUSTOMER', 'Customer', 8, 'external', 'customer', false],
-  ['VENDOR', 'Vendor', 9, 'external', 'vendor', false],
 ];
 
 // Modules (parent menus) and their screens. url = React route = RBAC screen key.
@@ -35,7 +34,7 @@ const MENUS = [
     ],
   },
   {
-    name: 'Customers & Vendors', icon: 'building-2', order: 15,
+    name: 'Customers', icon: 'building-2', order: 15,
     children: [{ name: 'Customers', url: '/customers', order: 1 }],
   },
   {
@@ -90,7 +89,7 @@ const PERMISSIONS = {
 };
 
 // ---------------------------------------------------------------- Masters
-const USER_TYPES = ['Employee', 'Contractor', 'Customer user', 'Vendor user'];
+const USER_TYPES = ['Employee', 'Contractor', 'Customer user'];
 const COUNTRIES = [['India', 'IN'], ['United Arab Emirates', 'AE'], ['United Kingdom', 'GB'], ['United States', 'US']];
 // teams [name, country code] and grade levels (lookups GRADE); one resource grade per level
 const TEAMS = [['Web India', 'IN'], ['SW India', 'IN'], ['SW UAE', 'AE']];
@@ -201,22 +200,22 @@ try {
   }
 
   for (const [i, name] of USER_TYPES.entries()) {
-    await q(`INSERT INTO lookups (type, name, display_order) VALUES ('USER_TYPE', $1, $2) ON CONFLICT (type, name) DO NOTHING`, [name, i + 1]);
+    await q(`INSERT INTO parameter_values (type, name, display_order) VALUES ('USER_TYPE', $1, $2) ON CONFLICT (type, name) DO NOTHING`, [name, i + 1]);
   }
   const gradeIds = {};
   for (const [i, name] of GRADES.entries()) {
     ({ id: gradeIds[name] } = await one(
-      `INSERT INTO lookups (type, name, display_order) VALUES ('GRADE', $1, $2)
+      `INSERT INTO parameter_values (type, name, display_order) VALUES ('GRADE', $1, $2)
        ON CONFLICT (type, name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
       [name, i + 1],
     ));
   }
   for (const [i, name] of TASK_ROLES.entries()) {
-    await q(`INSERT INTO lookups (type, name, display_order) VALUES ('SKILL', $1, $2) ON CONFLICT (type, name) DO NOTHING`, [name, i + 1]);
+    await q(`INSERT INTO parameter_values (type, name, display_order) VALUES ('SKILL', $1, $2) ON CONFLICT (type, name) DO NOTHING`, [name, i + 1]);
   }
   for (const [type, list] of [['COUNTRY', COUNTRIES], ['CURRENCY', CURRENCIES]]) {
     for (const [i, [name, value]] of list.entries()) {
-      await q(`INSERT INTO lookups (type, name, value, display_order) VALUES ($1, $2, $3, $4) ON CONFLICT (type, name) DO NOTHING`, [type, name, value, i + 1]);
+      await q(`INSERT INTO parameter_values (type, name, value, display_order) VALUES ($1, $2, $3, $4) ON CONFLICT (type, name) DO NOTHING`, [type, name, value, i + 1]);
     }
   }
   // USD rates are entered on Parameters → USD Rates (currency_usd_rates); USD itself is always 1
@@ -258,7 +257,7 @@ try {
 
   for (const [type, groups] of Object.entries(DEFAULT_ESTIMATES)) {
     for (const [group, pct] of Object.entries(groups)) {
-      await ensure('project_type_default_estimates', { project_type_id: projectTypeIds[type], task_group_id: groupIds[group] }, { effort_percentage: pct });
+      await ensure('project_type_effort_defaults', { project_type_id: projectTypeIds[type], task_group_id: groupIds[group] }, { effort_percentage: pct });
     }
   }
   for (const [code, name] of CUSTOMERS) {
@@ -266,7 +265,7 @@ try {
   }
 
   for (const [name, country] of TEAMS) {
-    const c = await one(`SELECT id FROM lookups WHERE type = 'COUNTRY' AND value = $1`, [country]);
+    const c = await one(`SELECT id FROM parameter_values WHERE type = 'COUNTRY' AND value = $1`, [country]);
     await ensure('teams', { name }, { country_id: c?.id ?? null });
   }
   // one resource grade per grade level (cost history is added on the Resource Grade & Cost screen)
@@ -276,8 +275,8 @@ try {
   if (!existingAdmin) {
     const hash = await bcrypt.hash(ADMIN_PASSWORD, 12);
     await q(
-      `INSERT INTO users (emp_code, username, password_hash, name, email, role_id, site_id, site_shift_id)
-       VALUES ('EMP-1001', $1, $2, 'System Administrator', 'admin@emqube.com', $3, $4, $5)`,
+      `INSERT INTO users (employee_code, username, password_hash, name, email, role_id, site_id, site_shift_id)
+       VALUES ('001', $1, $2, 'System Administrator', 'admin@emqube.com', $3, $4, $5)`,
       [ADMIN_USERNAME, hash, roleIds.SUPER_ADMIN, siteIds['Emqube Mumbai'], shiftIds['Emqube Mumbai/General Shift']],
     );
     console.log(`Super Admin created → username: ${ADMIN_USERNAME}  password: ${ADMIN_PASSWORD}  (change it after first login)`);

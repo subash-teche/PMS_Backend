@@ -90,7 +90,7 @@ export default async function configRoutes(fastify) {
                        GROUP BY m.month ORDER BY m.month`),
           // customers per country (lookups COUNTRY); "Not set" when empty
           f.db.query(`SELECT l.id, COALESCE(l.name, 'Not set') AS name, count(*)::int AS n
-                        FROM customers c LEFT JOIN lookups l ON l.id = c.country_id
+                        FROM customers c LEFT JOIN parameter_values l ON l.id = c.country_id
                        GROUP BY l.id, l.name ORDER BY n DESC, name`),
           // active customers without a contact person, email or phone
           f.db.query(`SELECT id, name, count(*) OVER()::int AS total,

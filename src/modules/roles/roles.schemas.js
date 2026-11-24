@@ -55,7 +55,7 @@ const roleBody = {
     code: { type: 'string', maxLength: 50 },
     level: { type: 'integer', minimum: 0, maximum: 99 },
     roleType: { type: 'string', enum: ['internal', 'external'], default: 'internal' },
-    dataScope: { type: 'string', enum: ['all', 'team', 'own', 'customer', 'vendor'], default: 'own' },
+    dataScope: { type: 'string', enum: ['all', 'team', 'own', 'customer'], default: 'own' },
     isActive: { type: 'boolean', default: true },
     permissions: { type: 'array', items: permission, default: [] },
     // which project tabs / Project-tab fields the role sees or edits; only changed when sent
@@ -72,7 +72,7 @@ export const listRolesSchema = {
       ...paginationQuerySchema,
       sortBy: { type: 'string', enum: ['name', 'level', 'code'], default: 'level' },
       roleType: { type: 'string', enum: ['internal', 'external'] },
-      dataScope: { type: 'string', description: 'comma-separated: all,team,own,customer,vendor' },
+      dataScope: { type: 'string', description: 'comma-separated: all,team,own,customer' },
       isActive: { type: 'boolean' },
     },
   },

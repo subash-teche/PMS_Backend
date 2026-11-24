@@ -84,7 +84,7 @@ const SELECT = `
          cc.cost_per_hour AS current_cost, trim(cc.currency) AS current_currency,
          (SELECT r.usd_rate FROM v_currency_usd_rates r WHERE r.code = trim(cc.currency) LIMIT 1) AS current_usd_rate
     FROM resource_grades x
-    JOIN lookups g ON g.id = x.grade_id
+    JOIN parameter_values g ON g.id = x.grade_id
     ${CURRENT_COST}`;
 
 const toDto = (r) => ({
@@ -128,7 +128,7 @@ const nextDay = (iso) => {
 
 /** Grade must be a GRADE lookup used once; per currency the cost periods must follow each other without gaps. */
 async function validate(db, b, id) {
-  const { rows } = await db.query(`SELECT 1 FROM lookups WHERE id = $1 AND type = 'GRADE'`, [b.gradeId]);
+  const { rows } = await db.query(`SELECT 1 FROM parameter_values WHERE id = $1 AND type = 'GRADE'`, [b.gradeId]);
   if (!rows.length) throw badRequest('Select a grade (Parameters → GRADE)', [{ field: 'gradeId', message: 'is not a grade' }]);
   const dup = await db.query(`SELECT 1 FROM resource_grades WHERE grade_id = $1 AND id IS DISTINCT FROM $2`, [b.gradeId, id]);
   if (dup.rowCount) throw conflict('This grade already exists – edit its cost history instead');

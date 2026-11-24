@@ -28,7 +28,7 @@ export default async function timesheetsRoutes(fastify) {
     service.timesheetOptions(db, req.auth),
   );
 
-  fastify.get('/meta', { schema: schemas.metaSchema, preHandler: authorize(SCREENS.TIMESHEET, 'view') }, (req) => service.timesheetMeta(db, req.auth));
+  fastify.get('/categories', { preHandler: authorize(SCREENS.TIMESHEET, 'view') }, () => service.timesheetCategories(db));
 
   fastify.get('/projects', { schema: schemas.filterProjectsSchema, preHandler: authorize(SCREENS.TIMESHEET, 'view') }, (req) =>
     service.filterProjects(db, req.auth),

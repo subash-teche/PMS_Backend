@@ -47,7 +47,7 @@ export const CONFIG_DEFS = [
     computed: { isSystem: { type: 'boolean' }, valueCount: { type: 'integer' } },
     // project stages have their own screen
     select: `SELECT x.id, x.code, x.name, x.description, x.display_order, x.is_system, x.created_at, x.updated_at,
-                    (SELECT count(*)::int FROM lookups l WHERE l.type = x.code) AS value_count
+                    (SELECT count(*)::int FROM parameter_values l WHERE l.type = x.code) AS value_count
                FROM parameter_types x WHERE x.code <> 'PROJECT_STAGE'`,
     beforeSave: async (db, body, id) => {
       if (body.code !== undefined) body.code = body.code.trim().toUpperCase();
@@ -58,7 +58,7 @@ export const CONFIG_DEFS = [
       }
     },
     beforeDelete: async (db, id) => {
-      const { rows } = await db.query(`SELECT is_system, (SELECT count(*)::int FROM lookups l WHERE l.type = p.code) AS n FROM parameter_types p WHERE id = $1`, [id]);
+      const { rows } = await db.query(`SELECT is_system, (SELECT count(*)::int FROM parameter_values l WHERE l.type = p.code) AS n FROM parameter_types p WHERE id = $1`, [id]);
       if (rows[0]?.is_system) throw conflict('This parameter is used by the application and cannot be deleted');
       if (rows[0]?.n) throw conflict(`This parameter has ${rows[0].n} value(s) – delete them on the Parameter Values tab first`);
     },
@@ -71,7 +71,7 @@ export const CONFIG_DEFS = [
   {
     name: 'parameters',
     label: 'Parameter Values',
-    table: 'lookups',
+    table: 'parameter_values',
     screen: SCREENS.PARAMETERS,
     fields: {
       // PROJECT_STAGE values are managed on the Project Stages screen
@@ -85,9 +85,9 @@ export const CONFIG_DEFS = [
     // project stages have their own screen
     computed: { typeName: { type: ['string', 'null'] } },
     select: `SELECT x.id, x.type, t.name AS type_name, x.name, x.value, x.display_order, x.is_visible, x.created_at, x.updated_at
-               FROM lookups x LEFT JOIN parameter_types t ON t.code = x.type WHERE x.type <> 'PROJECT_STAGE'`,
+               FROM parameter_values x LEFT JOIN parameter_types t ON t.code = x.type WHERE x.type <> 'PROJECT_STAGE'`,
     beforeSave: async (db, body, id) => {
-      const before = id ? (await db.query(`SELECT type, value FROM lookups WHERE id = $1`, [id])).rows[0] : null;
+      const before = id ? (await db.query(`SELECT type, value FROM parameter_values WHERE id = $1`, [id])).rows[0] : null;
       // the type must be one of the parameters (Parameters tab)
       if (body.type !== undefined) {
         const { rowCount } = await db.query(`SELECT 1 FROM parameter_types WHERE code = $1`, [body.type]);
@@ -107,7 +107,7 @@ export const CONFIG_DEFS = [
     defaultSort: 's.type, s.display_order, s.name',
     uniqueMessage: 'This parameter already exists for the selected type',
     beforeDelete: async (db, id) => {
-      const { rows } = await db.query(`SELECT type FROM lookups WHERE id = $1`, [id]);
+      const { rows } = await db.query(`SELECT type FROM parameter_values WHERE id = $1`, [id]);
       if (rows[0]?.type === 'SKILL') await assertSkillUnused(db, id, 'deleted');
     },
   },
@@ -124,7 +124,7 @@ export const CONFIG_DEFS = [
     computed: { countryName: { type: ['string', 'null'] }, userCount: { type: 'integer' } },
     select: `SELECT x.id, x.name, x.country_id, c.name AS country_name, x.created_at, x.updated_at,
                     (SELECT count(*)::int FROM user_teams ut WHERE ut.team_id = x.id) AS user_count
-               FROM teams x LEFT JOIN lookups c ON c.id = x.country_id`,
+               FROM teams x LEFT JOIN parameter_values c ON c.id = x.country_id`,
     search: ['name', 'country_name'],
     filters: { countryId: { schema: { type: 'string' }, sql: (w, v, ids) => w.add('s.country_id = ANY($?)', ids(v)) } },
     sort: { name: 's.name' },
@@ -134,7 +134,7 @@ export const CONFIG_DEFS = [
   {
     name: 'project-stages',
     label: 'Project Stages',
-    table: 'lookups',
+    table: 'parameter_values',
     screen: SCREENS.PROJECT_STAGES,
     fixed: { type: 'PROJECT_STAGE' },
     fields: {
@@ -147,7 +147,7 @@ export const CONFIG_DEFS = [
     computed: { projectCount: { type: 'integer' } },
     select: `SELECT x.id, x.name, x.value, x.display_order, x.is_visible, x.created_at, x.updated_at,
                     (SELECT count(*)::int FROM projects p WHERE p.stage_id = x.id) AS project_count
-               FROM lookups x WHERE x.type = 'PROJECT_STAGE'`,
+               FROM parameter_values x WHERE x.type = 'PROJECT_STAGE'`,
     search: ['name'],
     filters: { value: { schema: { type: 'string' }, sql: (w, v) => w.add('s.value = ANY($?)', String(v).split(',')) } },
     sort: { name: 's.name', displayOrder: 's.display_order' },
@@ -170,8 +170,13 @@ export const CONFIG_DEFS = [
     computed: { taskGroupName: { type: ['string', 'null'] }, inUse: { type: 'boolean' } },
     select: `SELECT x.id, x.name, x.description, x.task_group_id, g.name AS task_group_name,
                     x.is_active, x.created_at, x.updated_at,
+<<<<<<< HEAD
                     (EXISTS (SELECT 1 FROM timesheets ts WHERE ts.task_type_id = x.id)
                      OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)) AS in_use
+=======
+                    (EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)
+                     OR EXISTS (SELECT 1 FROM project_type_task_templates tt WHERE tt.task_type_id = x.id)) AS in_use
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
                FROM task_types x
                JOIN task_groups g ON g.id = x.task_group_id`,
     beforeSave: async (db, body, id) => {
@@ -257,7 +262,7 @@ export const CONFIG_DEFS = [
     select: `SELECT x.id, x.code, x.name, x.country_id, c.name AS country_name, x.contact_person, x.contact_number, x.email,
                     x.is_active, x.created_at, x.updated_at,
                     (SELECT count(*)::int FROM projects p WHERE p.customer_id = x.id) AS project_count
-               FROM customers x LEFT JOIN lookups c ON c.id = x.country_id`,
+               FROM customers x LEFT JOIN parameter_values c ON c.id = x.country_id`,
     search: ['name', 'code', 'contact_person', 'email'],
     filters: {
       ...activeFilter,

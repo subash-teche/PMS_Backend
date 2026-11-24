@@ -55,7 +55,7 @@ async function loadRolePermissions(db, roleId) {
 
 export async function loadAuthContext(db, userId) {
   const { rows } = await db.query(
-    `SELECT u.id, u.name, u.username, u.email, u.emp_code, u.is_active, u.customer_id, u.vendor_id, u.time_zone,
+    `SELECT u.id, u.name, u.username, u.email, u.employee_code, u.is_active, u.customer_id, u.time_zone,
             r.id AS role_id, r.code AS role_code, r.name AS role_name, r.level AS role_level,
             r.data_scope, r.role_type, r.is_active AS role_active
        FROM users u
@@ -72,11 +72,10 @@ export async function loadAuthContext(db, userId) {
     name: u.name,
     username: u.username,
     email: u.email,
-    empCode: u.emp_code,
+    empCode: u.employee_code,
     timeZone: u.time_zone, // dates / times are shown and "today" is counted in this zone
     isActive: u.is_active && u.role_active,
     customerId: u.customer_id,
-    vendorId: u.vendor_id,
     role: {
       id: u.role_id,
       code: u.role_code,

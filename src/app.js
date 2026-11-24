@@ -18,6 +18,7 @@ import tasksRoutes from './modules/tasks/tasks.routes.js';
 import task135Routes from './modules/task135/task135.routes.js';
 import taskAccessRoutes from './modules/taskaccess/taskaccess.routes.js';
 import projectPlanRoutes from './modules/projectplan/projectplan.routes.js';
+import flowRoutes from './modules/flow/flow.routes.js';
 
 export async function buildApp(opts = {}) {
   const app = Fastify({
@@ -59,6 +60,7 @@ export async function buildApp(opts = {}) {
       await api.register(tasksRoutes, { prefix: '/tasks' });
       await api.register(taskAccessRoutes, { prefix: '/task-access' });
       await api.register(task135Routes, { prefix: '/task-135' });
+      await api.register(flowRoutes, { prefix: '/flow' }); // Task Management
     },
     { prefix: '/api/v1' },
   );

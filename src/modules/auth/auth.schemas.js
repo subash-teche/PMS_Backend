@@ -50,6 +50,7 @@ export const sessionInfo = {
         },
       },
     },
+    apps: { type: 'array', items: { type: 'string', enum: ['pms', 'tm'] }, description: "parts of the app the role can open: 'tm' = the Tasks board, 1-3-5 and Messages" },
     permissions: { type: 'object', additionalProperties: permissionFlags },
     projectAccess: {
       type: 'object',

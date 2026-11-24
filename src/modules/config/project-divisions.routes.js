@@ -80,7 +80,7 @@ const SELECT = `
                    ORDER BY t.is_active DESC, t.name)
                      FROM project_types t WHERE t.project_division_id = d.id), '[]') AS project_types,
          COALESCE((SELECT json_agg(json_build_object('currency', trim(q.currency), 'ratePerHour', q.rate_per_hour) ORDER BY q.currency)
-                     FROM project_division_quote_rates q WHERE q.project_division_id = d.id), '[]') AS quote_rates
+                     FROM division_quote_rates q WHERE q.project_division_id = d.id), '[]') AS quote_rates
     FROM project_divisions d`;
 
 const toDto = (r) => ({
@@ -161,10 +161,10 @@ async function saveTypes(client, divisionId, types, userId) {
 
 /** Replaces the division's quote rates (one per currency). */
 async function saveRates(client, divisionId, rates, userId) {
-  await client.query(`DELETE FROM project_division_quote_rates WHERE project_division_id = $1`, [divisionId]);
+  await client.query(`DELETE FROM division_quote_rates WHERE project_division_id = $1`, [divisionId]);
   if (!rates.length) return;
   await client.query(
-    `INSERT INTO project_division_quote_rates (project_division_id, currency, rate_per_hour, created_by, updated_by)
+    `INSERT INTO division_quote_rates (project_division_id, currency, rate_per_hour, created_by, updated_by)
      SELECT $1, c, r, $4, $4 FROM unnest($2::text[], $3::numeric[]) AS u(c, r)`,
     [divisionId, rates.map((q) => q.currency), rates.map((q) => q.ratePerHour), userId],
   );

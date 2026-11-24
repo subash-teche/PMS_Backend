@@ -12,7 +12,7 @@ export const PROJECT_TABS = [
   { key: 'project', label: 'Project', editable: true },
   { key: 'users', label: 'Users', editable: true },
   { key: 'estimate', label: 'Estimate', editable: true },
-  { key: 'plan', label: 'Plan', editable: true }, // weekly plan by task group (also needs to be the project owner)
+  { key: 'plan', label: 'Plan', editable: true }, // weekly plan by task group
   { key: 'tasks', label: 'Tasks', editable: false },
   { key: 'commercial', label: 'Commercial', editable: true },
   { key: 'analysis', label: 'Analysis', editable: false },

@@ -6,7 +6,7 @@ import { tabAccess } from '../projects/project-access.js';
 
 /*
  * Project Plan tab: the project's task groups planned per week, from the project start to its end.
- * Only the project owner sees and edits it. It is a plan only – no tasks or time entries are made.
+ * Who sees and edits it is the role's Project access for the Plan tab (Hidden / View / Edit). It is a plan only – no tasks or time entries are made.
  */
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -49,7 +49,7 @@ export function periodsOf(rows) {
 
 /** The saved periods of a project's plan (Map task group id → periods). */
 export async function loadPeriods(db, projectId) {
-  const { rows } = await db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_week_plans WHERE project_id = $1`, [projectId]);
+  const { rows } = await db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_plan_weeks WHERE project_id = $1`, [projectId]);
   return periodsOf(rows);
 }
 
@@ -59,17 +59,16 @@ function needPlanTab(auth, level) {
   if (a === 'hidden' || (level === 'edit' && a !== 'edit')) throw forbidden(level === 'edit' ? 'Your role can only view the Plan tab' : 'Your role cannot see the Plan tab');
 }
 
-/** The project, for its owner only. */
+/** The project (access to the tab is checked by needPlanTab). */
 async function ownProject(db, auth, id) {
   const { rows } = await db.query(
     `SELECT p.id, p.owner_id, p.start_date::text AS start_date, p.end_date::text AS end_date, p.estimated_hours,
-            (SELECT COALESCE(SUM(e.effort_percentage), 0) FROM project_task_group_estimates e WHERE e.project_id = p.id) AS allocated
+            (SELECT COALESCE(SUM(e.effort_percentage), 0) FROM project_effort_estimates e WHERE e.project_id = p.id) AS allocated
        FROM projects p WHERE p.id = $1`,
     [id],
   );
   const p = rows[0];
   if (!p) throw notFound('Project');
-  if (p.owner_id !== auth.userId) throw forbidden('Only the project owner can see and change the plan');
   return p;
 }
 
@@ -114,11 +113,11 @@ export async function getPlan(db, auth, id) {
   const [groups, items, progress, tasks] = await Promise.all([
     // the task groups with a share of the project estimate (largest share first)
     db.query(
-      `SELECT g.id, g.name, e.effort_percentage FROM project_task_group_estimates e JOIN task_groups g ON g.id = e.task_group_id
+      `SELECT g.id, g.name, e.effort_percentage FROM project_effort_estimates e JOIN task_groups g ON g.id = e.task_group_id
         WHERE e.project_id = $1 AND e.effort_percentage > 0 ORDER BY e.effort_percentage DESC, g.name`,
       [id],
     ),
-    db.query(`SELECT id, task_group_id, week_start::text AS week_start FROM project_week_plans WHERE project_id = $1 ORDER BY week_start, id`, [id]),
+    db.query(`SELECT id, task_group_id, week_start::text AS week_start FROM project_plan_weeks WHERE project_id = $1 ORDER BY week_start, id`, [id]),
     // the work done per task group: tasks by status, when it started (first status change or first time logged) and when the last task was completed
     db.query(
       `SELECT t.task_group_id,
@@ -127,7 +126,7 @@ export async function getPlan(db, auth, id) {
               count(*) FILTER (WHERE t.status = 'in_progress')::int AS in_progress,
               count(*) FILTER (WHERE t.status = 'hold')::int AS hold,
               count(*) FILTER (WHERE t.status = 'to_do')::int AS to_do,
-              count(*) FILTER (WHERE t.status <> 'completed' AND NOT t.is_continuous AND t.planned_end < now())::int AS overdue,
+              count(*) FILTER (WHERE t.status <> 'completed' AND t.planned_end < now())::int AS overdue,
               COALESCE(sum(t.estimated_minutes), 0)::int AS estimated_minutes,
               LEAST(min((t.actual_start AT TIME ZONE $2)::date),
                     (SELECT min(x.work_date) FROM timesheets x JOIN tasks tt ON tt.id = x.task_id WHERE tt.project_id = $1 AND tt.task_group_id = t.task_group_id AND tt.is_active))::text AS started,
@@ -140,18 +139,24 @@ export async function getPlan(db, auth, id) {
     ),
     // each task of the groups: its planned dates, when it started and when it was completed
     db.query(
+<<<<<<< HEAD
       `SELECT t.id, t.task_group_id, t.task_type_id, tty.name AS task_type_name, t.name, t.status, t.is_continuous, u.name AS assigned_to_name,
+=======
+      `SELECT t.id, t.task_group_id, t.name, t.status, u.name AS assigned_to_name,
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
               (t.planned_start AT TIME ZONE $2)::date::text AS planned_start,
               (t.planned_end AT TIME ZONE $2)::date::text AS planned_end,
               LEAST((t.actual_start AT TIME ZONE $2)::date, (SELECT min(x.work_date) FROM timesheets x WHERE x.task_id = t.id))::text AS started,
               CASE WHEN t.status = 'completed' THEN COALESCE((t.actual_end AT TIME ZONE $2)::date, t.completed_on)::text END AS finished,
               COALESCE(t.estimated_minutes, 0)::int AS estimated_minutes,
               (SELECT COALESCE(sum(x.minutes), 0)::int FROM timesheets x WHERE x.task_id = t.id) AS logged_minutes,
-              (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id) AS subtask_total,
-              (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id AND s.is_done) AS subtask_done,
               COALESCE((SELECT json_agg(json_build_object('date', q.d::text, 'minutes', q.m) ORDER BY q.d)
                           FROM (SELECT x.work_date AS d, sum(x.minutes)::int AS m FROM timesheets x WHERE x.task_id = t.id GROUP BY x.work_date) q), '[]'::json) AS logs
+<<<<<<< HEAD
          FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to LEFT JOIN task_types tty ON tty.id = t.task_type_id
+=======
+         FROM tasks t LEFT JOIN task_holders h ON h.task_id = t.id LEFT JOIN users u ON u.id = h.user_id
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
         WHERE t.project_id = $1 AND t.is_active AND t.task_group_id IS NOT NULL
         ORDER BY t.task_group_id, t.display_order NULLS LAST, t.id`,
       [id, safeZone(auth.timeZone)],
@@ -185,7 +190,6 @@ export async function getPlan(db, auth, id) {
       taskTypeName: r.task_type_name ?? null,
       name: r.name,
       status: r.status,
-      isContinuous: r.is_continuous,
       assignedToName: r.assigned_to_name,
       plannedStart: r.planned_start,
       plannedEnd: r.planned_end,
@@ -193,8 +197,6 @@ export async function getPlan(db, auth, id) {
       finished: r.finished,
       estimatedMinutes: r.estimated_minutes,
       loggedMinutes: r.logged_minutes,
-      subtaskTotal: r.subtask_total,
-      subtaskDone: r.subtask_done,
       logs: r.logs,
     })),
   };
@@ -205,7 +207,7 @@ async function check(db, p, taskGroupId, weekStart) {
   const gap = estimateGap(p);
   if (gap) throw badRequest(gap);
   if (!weeksOf(p).some((w) => w.start === weekStart)) throw badRequest('Pick a week within the project dates', [{ field: 'weekStart', message: 'not a week of the project' }]);
-  const { rowCount } = await db.query(`SELECT 1 FROM project_task_group_estimates WHERE project_id = $1 AND task_group_id = $2 AND effort_percentage > 0`, [p.id, taskGroupId]);
+  const { rowCount } = await db.query(`SELECT 1 FROM project_effort_estimates WHERE project_id = $1 AND task_group_id = $2 AND effort_percentage > 0`, [p.id, taskGroupId]);
   if (!rowCount) throw badRequest('The task group is not in the project estimate', [{ field: 'taskGroupId', message: 'not in the estimate' }]);
 }
 
@@ -214,7 +216,7 @@ export async function addItem(db, auth, id, body) {
   const p = await ownProject(db, auth, id);
   await check(db, p, body.taskGroupId, body.weekStart);
   const { rows } = await db.query(
-    `INSERT INTO project_week_plans (project_id, task_group_id, week_start, created_by) VALUES ($1, $2, $3, $4)
+    `INSERT INTO project_plan_weeks (project_id, task_group_id, week_start, created_by) VALUES ($1, $2, $3, $4)
      ON CONFLICT (project_id, task_group_id, week_start) DO NOTHING RETURNING id`,
     [id, body.taskGroupId, body.weekStart, auth.userId],
   );
@@ -225,15 +227,15 @@ export async function addItem(db, auth, id, body) {
 export async function moveItem(db, auth, id, itemId, body) {
   needPlanTab(auth, 'edit');
   const p = await ownProject(db, auth, id);
-  const { rows } = await db.query(`SELECT task_group_id FROM project_week_plans WHERE id = $1 AND project_id = $2`, [itemId, id]);
+  const { rows } = await db.query(`SELECT task_group_id FROM project_plan_weeks WHERE id = $1 AND project_id = $2`, [itemId, id]);
   if (!rows[0]) throw notFound('Plan item');
   await check(db, p, rows[0].task_group_id, body.weekStart);
   const { rows: clash } = await db.query(
-    `SELECT 1 FROM project_week_plans WHERE project_id = $1 AND task_group_id = $2 AND week_start = $3 AND id <> $4`,
+    `SELECT 1 FROM project_plan_weeks WHERE project_id = $1 AND task_group_id = $2 AND week_start = $3 AND id <> $4`,
     [id, rows[0].task_group_id, body.weekStart, itemId],
   );
   if (clash[0]) throw conflict('This task group is already planned in that week');
-  await db.query(`UPDATE project_week_plans SET week_start = $2 WHERE id = $1`, [itemId, body.weekStart]);
+  await db.query(`UPDATE project_plan_weeks SET week_start = $2 WHERE id = $1`, [itemId, body.weekStart]);
   return getPlan(db, auth, id);
 }
 
@@ -244,9 +246,9 @@ export async function savePlan(db, auth, id, body) {
   const gap = estimateGap(p);
   if (gap) throw badRequest(gap);
   const weeks = new Set(weeksOf(p).map((w) => w.start));
-  const { rows } = await db.query(`SELECT task_group_id FROM project_task_group_estimates WHERE project_id = $1 AND effort_percentage > 0`, [id]);
+  const { rows } = await db.query(`SELECT task_group_id FROM project_effort_estimates WHERE project_id = $1 AND effort_percentage > 0`, [id]);
   const groups = new Set(rows.map((r) => Number(r.task_group_id)));
-  const { rows: planned } = await db.query(`SELECT DISTINCT task_group_id FROM project_week_plans WHERE project_id = $1`, [id]);
+  const { rows: planned } = await db.query(`SELECT DISTINCT task_group_id FROM project_plan_weeks WHERE project_id = $1`, [id]);
   const seen = new Set();
   const items = [];
   for (const it of body.items) {
@@ -268,10 +270,10 @@ export async function savePlan(db, auth, id, body) {
     'items',
   );
   await db.tx(async (client) => {
-    await client.query(`DELETE FROM project_week_plans WHERE project_id = $1`, [id]);
+    await client.query(`DELETE FROM project_plan_weeks WHERE project_id = $1`, [id]);
     if (items.length) {
       await client.query(
-        `INSERT INTO project_week_plans (project_id, task_group_id, week_start, created_by)
+        `INSERT INTO project_plan_weeks (project_id, task_group_id, week_start, created_by)
          SELECT $1, t.g, t.w::date, $4 FROM unnest($2::bigint[], $3::text[]) AS t(g, w)`,
         [id, items.map((i) => i.taskGroupId), items.map((i) => i.weekStart), auth.userId],
       );
@@ -317,7 +319,7 @@ export async function applyPlan(db, auth, id, body) {
       if (!period) continue;
       const res = await client.query(
         `UPDATE tasks SET planned_start = ($3::date + time '09:00') AT TIME ZONE $5, planned_end = ($4::date + time '18:00') AT TIME ZONE $5,
-                is_continuous = false, updated_by = $6
+                updated_by = $6
           WHERE project_id = $1 AND task_group_id = $2 AND from_plan AND is_active AND status <> 'completed'`,
         [id, gid, period.start, period.end, zone, auth.userId],
       );
@@ -331,6 +333,6 @@ export async function applyPlan(db, auth, id, body) {
 export async function removeItem(db, auth, id, itemId) {
   needPlanTab(auth, 'edit');
   await ownProject(db, auth, id);
-  await db.query(`DELETE FROM project_week_plans WHERE id = $1 AND project_id = $2`, [itemId, id]);
+  await db.query(`DELETE FROM project_plan_weeks WHERE id = $1 AND project_id = $2`, [itemId, id]);
   return getPlan(db, auth, id);
 }

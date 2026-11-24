@@ -58,9 +58,15 @@ const item = {
   },
 };
 
+<<<<<<< HEAD
 // a task type is "in use" when timesheets or project tasks point at it
 const IN_USE = (alias) => `(EXISTS (SELECT 1 FROM timesheets ts WHERE ts.task_type_id = ${alias}.id)
                        OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = ${alias}.id))`;
+=======
+// a task type is "in use" when project tasks or task templates point at it
+const IN_USE = (alias) => `(EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = ${alias}.id)
+                       OR EXISTS (SELECT 1 FROM project_type_task_templates tt WHERE tt.task_type_id = ${alias}.id))`;
+>>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
 
 const SELECT = `
   SELECT g.id, g.name, g.updated_at,

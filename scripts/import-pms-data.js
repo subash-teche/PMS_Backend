@@ -154,9 +154,9 @@ async function run() {
   // task roles
   const roleIds = {};
   for (const [i, name] of TASK_ROLES.entries()) {
-    let row = await one(`SELECT id FROM lookups WHERE type = 'SKILL' AND lower(name) = lower($1)`, [name]);
+    let row = await one(`SELECT id FROM parameter_values WHERE type = 'SKILL' AND lower(name) = lower($1)`, [name]);
     if (!row) {
-      row = await one(`INSERT INTO lookups (type, name, display_order) VALUES ('SKILL', $1, $2) RETURNING id`, [name, i + 1]);
+      row = await one(`INSERT INTO parameter_values (type, name, display_order) VALUES ('SKILL', $1, $2) RETURNING id`, [name, i + 1]);
       log.added.push(`task role "${name}"`);
     }
     roleIds[name] = row.id;

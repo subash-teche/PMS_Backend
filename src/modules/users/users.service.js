@@ -4,48 +4,45 @@ import { badRequest, conflict, forbidden, isReferenceError, notFound } from '../
 import { escapeLike, idList, WhereBuilder } from '../../utils/query.js';
 import { assertCanManageLevel } from '../roles/roles.service.js';
 
-const SORT_COLUMNS = { name: 'u.name', empCode: 'u.emp_code', username: 'u.username', lastLoginAt: 'u.last_login_at' };
+const SORT_COLUMNS = { name: 'u.name', empCode: 'u.employee_code', username: 'u.username', lastLoginAt: 'u.last_login_at' };
 
 // API field -> column, for the editable fields of the user form.
 const FIELDS = {
   name: 'name',
-  empCode: 'emp_code',
+  empCode: 'employee_code',
   email: 'email',
   dob: 'dob',
   username: 'username',
   roleId: 'role_id',
   userTypeId: 'user_type_id',
   isActive: 'is_active',
-  reportsTo: 'reports_to',
-  reviewedBy: 'reviewed_by',
+  reportsTo: 'manager_id',
   siteId: 'site_id',
   siteShiftId: 'site_shift_id',
   resourceGradeId: 'resource_grade_id',
   timeZone: 'time_zone',
   isOnLeave: 'is_on_leave',
   customerId: 'customer_id',
-  vendorId: 'vendor_id',
 };
 
 const SELECT = `
   SELECT u.*, r.name AS role_name, r.level AS role_level, r.code AS role_code,
          COALESCE((SELECT json_agg(json_build_object('id', l.id, 'name', l.name) ORDER BY l.display_order, l.name)
-                     FROM user_skills us JOIN lookups l ON l.id = us.skill_id WHERE us.user_id = u.id), '[]') AS skills,
-         rt.name AS reports_to_name, rv.name AS reviewed_by_name,
+                     FROM user_skills us JOIN parameter_values l ON l.id = us.skill_id WHERE us.user_id = u.id), '[]') AS skills,
+         rt.name AS manager_name,
          s.name AS site_name,
          ss.name || ' (' || to_char(ss.start_time, 'HH24:MI') || ' - ' || to_char(ss.end_time, 'HH24:MI') || ')' AS site_shift, ut.name AS user_type_name, c.name AS customer_name
     FROM users u
     JOIN roles r ON r.id = u.role_id
-    LEFT JOIN users rt ON rt.id = u.reports_to
-    LEFT JOIN users rv ON rv.id = u.reviewed_by
+    LEFT JOIN users rt ON rt.id = u.manager_id
     LEFT JOIN sites s ON s.id = u.site_id
     LEFT JOIN site_shifts ss ON ss.id = u.site_shift_id
-    LEFT JOIN lookups ut ON ut.id = u.user_type_id
+    LEFT JOIN parameter_values ut ON ut.id = u.user_type_id
     LEFT JOIN customers c ON c.id = u.customer_id`;
 
 const toDto = (u) => ({
   id: u.id,
-  empCode: u.emp_code,
+  empCode: u.employee_code,
   username: u.username,
   name: u.name,
   email: u.email,
@@ -57,10 +54,8 @@ const toDto = (u) => ({
   skills: u.skills ?? [],
   userTypeId: u.user_type_id,
   userTypeName: u.user_type_name,
-  reportsTo: u.reports_to,
-  reportsToName: u.reports_to_name,
-  reviewedBy: u.reviewed_by,
-  reviewedByName: u.reviewed_by_name,
+  reportsTo: u.manager_id,
+  reportsToName: u.manager_name,
   siteId: u.site_id,
   siteName: u.site_name,
   siteShiftId: u.site_shift_id,
@@ -69,7 +64,6 @@ const toDto = (u) => ({
   timeZone: u.time_zone,
   customerId: u.customer_id,
   customerName: u.customer_name,
-  vendorId: u.vendor_id,
   isActive: u.is_active,
   isOnLeave: u.is_on_leave,
   isLocked: u.failed_login_attempts > 0 && u.failed_login_attempts >= (u.max_failed ?? Infinity),
@@ -83,14 +77,14 @@ export async function listUsers(db, q, maxFailedLogins) {
   const where = new WhereBuilder();
   if (q.search) {
     const s = `%${escapeLike(q.search)}%`;
-    where.add(`(u.name ILIKE $? OR u.username ILIKE $? OR u.email ILIKE $? OR u.emp_code ILIKE $?)`, s, s, s, s);
+    where.add(`(u.name ILIKE $? OR u.username ILIKE $? OR u.email ILIKE $? OR u.employee_code ILIKE $?)`, s, s, s, s);
   }
   const roleIds = idList(q.roleId);
   if (roleIds.length) where.add(`u.role_id = ANY($?)`, roleIds);
   const siteIds = idList(q.siteId);
   if (siteIds.length) where.add(`u.site_id = ANY($?)`, siteIds);
   const reportsTo = idList(q.reportsTo);
-  if (reportsTo.length) where.add(`u.reports_to = ANY($?)`, reportsTo);
+  if (reportsTo.length) where.add(`u.manager_id = ANY($?)`, reportsTo);
   const userTypes = idList(q.userTypeId);
   if (userTypes.length) where.add(`u.user_type_id = ANY($?)`, userTypes);
   if (q.isActive !== undefined) where.add(`u.is_active = $?`, q.isActive);
@@ -118,8 +112,7 @@ export async function userSummary(db) {
               count(*) FILTER (WHERE r.role_type = 'internal')::int AS internal,
               count(*) FILTER (WHERE r.role_type = 'external')::int AS external,
               count(*) FILTER (WHERE u.is_active)::int AS active,
-              count(*) FILTER (WHERE u.customer_id IS NOT NULL OR r.data_scope = 'customer')::int AS customer_logins,
-              count(*) FILTER (WHERE u.vendor_id IS NOT NULL OR r.data_scope = 'vendor')::int AS vendor_logins
+              count(*) FILTER (WHERE u.customer_id IS NOT NULL OR r.data_scope = 'customer')::int AS customer_logins
          FROM users u JOIN roles r ON r.id = u.role_id`,
     ),
     db.query(
@@ -140,7 +133,7 @@ export async function userSummary(db) {
     inactive: r.total - r.active,
     totalByMonth: trend.rows.map((m) => m.n),
     onLeave: { total: leave.rows[0]?.total ?? 0, people: leave.rows.map((u) => ({ id: u.id, name: u.name })) },
-    externalLogins: { customer: r.customer_logins, vendor: r.vendor_logins },
+    externalLogins: { customer: r.customer_logins },
   };
 }
 
@@ -157,13 +150,15 @@ async function getRoleLevel(db, roleId) {
   return rows[0].level;
 }
 
-/** Next free EMP-#### code (serialised with an advisory lock so two inserts cannot collide). */
-async function nextEmpCode(client) {
-  await client.query(`SELECT pg_advisory_xact_lock(hashtext('users.emp_code'))`);
-  const { rows } = await client.query(
-    `SELECT COALESCE(MAX(substring(emp_code FROM '^EMP-(\\d+)$')::int), 1000) + 1 AS n FROM users`,
-  );
-  return `EMP-${rows[0].n}`;
+/**
+ * Next employee code: a number of at least three digits - 001 for the first employee, then the highest number + 1 (999 is
+ * followed by 1000). Codes that are not plain numbers (EMQ099, or an old EMP-####) are ignored. Serialised with an advisory lock so two
+ * inserts cannot collide.
+ */
+export async function nextEmpCode(client) {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext('users.employee_code'))`);
+  const { rows } = await client.query(`SELECT COALESCE(MAX(employee_code::int), 0) + 1 AS n FROM users WHERE employee_code ~ '^[0-9]{1,9}$'`);
+  return String(rows[0].n).padStart(3, '0');
 }
 
 /** The shift must be one of the user's site's shifts (no site → no shift). */
@@ -190,7 +185,7 @@ async function saveSkills(client, userId, roleId, skillIds) {
   if (!Array.isArray(skillIds)) return;
   const ids = [...new Set(skillIds)];
   if (ids.length) {
-    const { rows: found } = await client.query(`SELECT id FROM lookups WHERE id = ANY($1) AND type = 'SKILL'`, [ids]);
+    const { rows: found } = await client.query(`SELECT id FROM parameter_values WHERE id = ANY($1) AND type = 'SKILL'`, [ids]);
     if (found.length !== ids.length) throw badRequest('A selected skill does not exist (Parameters → SKILL)', [{ field: 'skillIds', message: 'unknown skill' }]);
   }
   await client.query(`DELETE FROM user_skills WHERE user_id = $1`, [userId]);
@@ -245,7 +240,7 @@ export async function updateUser(db, auth, id, body, maxFailedLogins) {
     assertCanManageLevel(auth, await getRoleLevel(db, body.roleId));
   }
   if (isSelf && body.isActive === false) throw forbidden('You cannot deactivate your own account');
-  if (body.reportsTo === id || body.reviewedBy === id) throw badRequest('A user cannot report to or review themselves');
+  if (body.reportsTo === id) throw badRequest('A user cannot report to themselves');
 
   const data = { ...body };
   delete data.password;

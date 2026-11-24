@@ -28,6 +28,11 @@ const entry = {
     hours: { type: 'number' },
     comment: { type: ['string', 'null'] },
     isBillable: { type: 'boolean' },
+    source: { type: 'string', enum: ['manual', 'flow'], description: 'flow = logged in Task Management (read-only here)' },
+    flowTaskId: { type: ['integer', 'null'] },
+    entries: { type: 'integer', description: 'grouped by task: how many entries were added up' },
+    firstDate: { type: 'string' },
+    lastDate: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
   },
@@ -36,11 +41,7 @@ const entry = {
 // time spent in whole minutes; the day total is capped at 24 h (1440 mins) by the service
 const fields = {
   workDate: { type: 'string', format: 'date' },
-  categoryId: { type: 'integer', minimum: 1, description: 'task category – a project category (the default) needs projectId / taskTypeId' },
-  projectId: { type: ['integer', 'null'], minimum: 1 },
-  taskGroupId: { type: ['integer', 'null'], minimum: 1, description: 'project time: a group of the project estimate' },
-  taskTypeId: { type: ['integer', 'null'], minimum: 1 },
-  taskId: { type: ['integer', 'null'], minimum: 1 },
+  taskId: { type: 'integer', minimum: 1, description: 'the task the time was spent on (one you work on)' },
   minutes: { type: 'integer', minimum: 1, maximum: 1440 },
   comment: { type: 'string', minLength: 1, maxLength: 2000, pattern: '\\S' },
   isBillable: { type: 'boolean' },
@@ -56,6 +57,7 @@ export const listSchema = {
       sortDir: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
       sortBy: { type: 'string', enum: ['workDate', 'minutes', 'project', 'createdAt'], default: 'workDate' },
       scope,
+      groupBy: { type: 'string', enum: ['task'], description: 'task = one row per task with the time collected on it' },
       projectId: { type: 'string', description: 'comma-separated ids' },
       userId: { type: 'string', description: 'comma-separated ids (team scope)' },
       taskGroupId: { type: 'string', description: 'comma-separated ids' },
@@ -91,7 +93,7 @@ export const summarySchema = {
 
 export const optionsSchema = {
   tags,
-  summary: 'Assigned projects with the task groups of their estimate, task types and tasks',
+  summary: 'Log time form: the tasks you work on, with their project and category',
   response: {
     200: {
       type: 'array',
@@ -99,54 +101,13 @@ export const optionsSchema = {
         type: 'object',
         properties: {
           id: { type: 'integer' },
-          code: { type: 'string' },
-          title: { type: 'string' },
-          taskGroups: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                id: { type: 'integer' },
-                name: { type: 'string' },
-                effortPercentage: { type: 'number' },
-                taskTypes: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' } } } },
-              },
-            },
-          },
-          tasks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: { id: { type: 'integer' }, name: { type: 'string' }, taskGroupId: { type: ['integer', 'null'] }, taskTypeId: { type: ['integer', 'null'] } },
-            },
-          },
-        },
-      },
-    },
-  },
-};
-
-export const metaSchema = {
-  tags,
-  summary: 'Log time form: task categories, all task groups with types, and your own tasks without a project',
-  response: {
-    200: {
-      type: 'object',
-      properties: {
-        categories: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, isProject: { type: 'boolean' }, taskGroupIds: { type: 'array', items: { type: 'integer' } } } } },
-        taskGroups: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: { id: { type: 'integer' }, name: { type: 'string' }, taskTypes: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' } } } } },
-          },
-        },
-        tasks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: { id: { type: 'integer' }, name: { type: 'string' }, categoryId: { type: ['integer', 'null'] }, taskGroupId: { type: ['integer', 'null'] }, taskTypeId: { type: ['integer', 'null'] } },
-          },
+          name: { type: 'string' },
+          status: { type: 'string' },
+          projectId: { type: ['integer', 'null'] },
+          projectCode: { type: ['string', 'null'] },
+          projectTitle: { type: ['string', 'null'] },
+          categoryId: { type: ['integer', 'null'] },
+          categoryName: { type: ['string', 'null'] },
         },
       },
     },
@@ -169,7 +130,7 @@ export const createSchema = {
   body: {
     type: 'object',
     additionalProperties: false,
-    required: ['workDate', 'minutes', 'comment'],
+    required: ['workDate', 'taskId', 'minutes', 'comment'],
     properties: fields,
   },
   response: { 201: entry },
