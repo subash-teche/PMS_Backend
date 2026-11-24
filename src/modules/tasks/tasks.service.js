@@ -581,18 +581,17 @@ export async function updateTask(db, auth, id, body) {
   return getTask(db, auth, id);
 }
 
-// ---------------------------------------------------------------- add tasks from a project's template
+// ---------------------------------------------------------------- add tasks from a project's plan
 
-/** Projects the user may add template tasks to: the ongoing projects they own (Super Admin: all), not completed / cancelled. */
+/** Projects the user may add tasks to: the ongoing projects they own (Super Admin: all), not completed / cancelled. */
 export async function templateProjects(db, auth) {
   const { rows } = await db.query(
-    `SELECT p.id, p.code, p.title, p.status, pt.name AS project_type_name, c.name AS customer_name,
-            (SELECT count(*)::int FROM project_type_task_templates tt WHERE tt.project_type_id = p.project_type_id) AS template_count
+    `SELECT p.id, p.code, p.title, p.status, pt.name AS project_type_name, c.name AS customer_name
        FROM projects p
        LEFT JOIN project_types pt ON pt.id = p.project_type_id
        LEFT JOIN customers c ON c.id = p.customer_id
       WHERE p.status NOT IN ('completed', 'cancelled')
-        AND ($1::boolean OR p.owner_id = $2) -- only the project owner adds template tasks
+        AND ($1::boolean OR p.owner_id = $2) -- only the project owner adds tasks
       ORDER BY p.title`,
     [auth.isSuperAdmin, auth.userId],
   );
@@ -606,7 +605,6 @@ export async function templateProjects(db, auth) {
     peopleIds: people.get(r.id)?.peopleIds ?? [],
     projectTypeName: r.project_type_name,
     customerName: r.customer_name,
-    templateCount: r.template_count,
   }));
 }
 
@@ -617,127 +615,14 @@ async function ongoingProject(db, auth, projectId) {
   return p;
 }
 
-/** The template tasks of the project's type, with the estimate for this project and how often each is already a task. */
-export async function projectTemplates(db, auth, projectId) {
-  await ongoingProject(db, auth, projectId);
-  const { rows } = await db.query(
-    `SELECT tt.id, tt.task_title, tt.description, tt.effort_percentage, tt.task_group_id, g.name AS task_group_name,
-            tt.task_type_id, ty.name AS task_type_name,
-            CASE WHEN p.estimated_hours > 0 AND tt.effort_percentage > 0
-                 THEN ROUND(p.estimated_hours * 60 * tt.effort_percentage / 100)::int END AS estimated_minutes,
-            COALESCE((SELECT array_agg(l.name ORDER BY l.display_order, l.name) FROM project_type_task_template_roles r
-                        JOIN lookups l ON l.id = r.role_id WHERE r.task_template_id = tt.id), '{}') AS skills,
-            COALESCE((SELECT array_agg(r.role_id) FROM project_type_task_template_roles r WHERE r.task_template_id = tt.id), '{}') AS skill_ids,
-            (SELECT count(*)::int FROM tasks t WHERE t.project_id = p.id AND t.is_active AND lower(t.name) = lower(tt.task_title)) AS existing
-       FROM projects p
-       JOIN project_type_task_templates tt ON tt.project_type_id = p.project_type_id
-       JOIN task_groups g ON g.id = tt.task_group_id
-       JOIN task_types ty ON ty.id = tt.task_type_id
-      WHERE p.id = $1
-      ORDER BY g.name, tt.sort_order, tt.task_title`,
-    [projectId],
-  );
-  // project people (owner + members, active) and their skills (Users → Skills)
-  const { rows: people } = await db.query(
-    `SELECT u.id, u.name,
-            COALESCE(json_agg(json_build_object('id', l.id, 'name', l.name)) FILTER (WHERE l.id IS NOT NULL), '[]') AS skills
-       FROM users u
-       LEFT JOIN user_skills us ON us.user_id = u.id
-       LEFT JOIN lookups l ON l.id = us.skill_id
-      WHERE u.is_active
-        AND (u.id = (SELECT owner_id FROM projects WHERE id = $1)
-             OR u.id IN (SELECT pm.user_id FROM project_members pm WHERE pm.project_id = $1))
-      GROUP BY u.id, u.name ORDER BY u.name`,
-    [projectId],
-  );
-  // people who have one of the task's skills – most matching skills first
-  const matchesFor = (skillIds) =>
-    people
-      .map((p) => {
-        const need = skillIds.map(Number);
-        const shared = p.skills.filter((sk) => need.includes(Number(sk.id)));
-        return { userId: p.id, name: p.name, skills: shared.map((sk) => sk.name), count: shared.length };
-      })
-      .filter((m) => m.count > 0)
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-      .map(({ userId, name, skills }) => ({ userId, name, skills }));
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.task_title,
-    description: r.description,
-    effortPercentage: r.effort_percentage,
-    taskGroupId: r.task_group_id,
-    taskGroupName: r.task_group_name,
-    taskTypeId: r.task_type_id,
-    taskTypeName: r.task_type_name,
-    estimatedMinutes: r.estimated_minutes,
-    skills: r.skills,
-    existing: r.existing,
-    matches: matchesFor(r.skill_ids),
-  }));
-}
-
-/**
- * Creates tasks on the project from the picked template tasks. Common values (owner, dates, priority)
- * apply to all; each picked task can have its own assignee. All or nothing.
- */
-export async function createFromTemplate(db, auth, body) {
-  await ongoingProject(db, auth, body.projectId);
-  const { rows: cat } = await db.query(`SELECT id FROM task_categories WHERE is_project AND is_active ORDER BY display_order, id LIMIT 1`);
-  if (!cat[0]) throw badRequest('Add an active task category that needs a project (Task → Task Category) first');
-  const templates = await projectTemplates(db, auth, body.projectId);
-  const values = [];
-  for (const [i, item] of body.items.entries()) {
-    const tpl = templates.find((t) => t.id === item.templateId);
-    if (!tpl) throw badRequest(`Task ${i + 1} is not in this project's template`, [{ field: `items.${i}.templateId`, message: 'not in the template' }]);
-    // each picked task has its own people / plan; anything not sent falls back to the common value
-    const own = (k, fallback) => (item[k] !== undefined ? item[k] : body[k] !== undefined ? body[k] : fallback);
-    try {
-      values.push(
-        await validate(db, auth, {
-          name: tpl.title,
-          description: tpl.description,
-          categoryId: cat[0].id,
-          projectId: body.projectId,
-          taskGroupId: tpl.taskGroupId,
-          taskTypeId: tpl.taskTypeId,
-          ownerId: own('ownerId', auth.userId),
-          assignedTo: own('assignedTo', auth.userId),
-          estimatedMinutes: item.estimatedMinutes !== undefined ? item.estimatedMinutes : tpl.estimatedMinutes,
-          priority: own('priority', 'medium'),
-          status: 'to_do',
-          isContinuous: own('isContinuous', false),
-          plannedStart: own('plannedStart', null),
-          plannedEnd: own('plannedEnd', null),
-          completedOn: null,
-          subtasks: [],
-        }),
-      );
-    } catch (err) {
-      // say which picked task is wrong
-      if (err.statusCode === 400 || err.statusCode === 403) {
-        err.message = `${tpl.title}: ${err.message}`;
-        err.details = (err.details ?? []).map((d) => ({ ...d, field: `items.${i}.${d.field}` }));
-      }
-      throw err;
-    }
-  }
-  const ids = await db.tx(async (client) => {
-    const out = [];
-    for (const v of values) out.push(await insertTask(client, auth, v, `Task "${v.name}" created from the project template`));
-    return out;
-  });
-  return { created: ids.length, ids };
-}
-
 /**
  * The project's planned task groups, for "add tasks from the plan": each group's periods and the tasks it gets –
- * the project type's template tasks of that group (or one task named after the group when it has none).
+ * one task named after the group.
  * A task that already exists on the project (same name) is marked `existing`.
  */
 export async function planTasks(db, auth, projectId) {
   await ongoingProject(db, auth, projectId);
-  const [project, groups, weeks, templates, names] = await Promise.all([
+  const [project, groups, weeks, names] = await Promise.all([
     db.query(`SELECT estimated_hours FROM projects WHERE id = $1`, [projectId]),
     db.query(
       `SELECT g.id, g.name, e.effort_percentage FROM project_task_group_estimates e JOIN task_groups g ON g.id = e.task_group_id
@@ -745,14 +630,6 @@ export async function planTasks(db, auth, projectId) {
       [projectId],
     ),
     db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_week_plans WHERE project_id = $1`, [projectId]),
-    db.query(
-      `SELECT tt.id, tt.task_title, tt.description, tt.task_group_id, tt.task_type_id, ty.name AS task_type_name, tt.effort_percentage
-         FROM projects p
-         JOIN project_type_task_templates tt ON tt.project_type_id = p.project_type_id
-         JOIN task_types ty ON ty.id = tt.task_type_id
-        WHERE p.id = $1 ORDER BY tt.sort_order, tt.task_title`,
-      [projectId],
-    ),
     db.query(`SELECT lower(name) AS name FROM tasks WHERE project_id = $1 AND is_active`, [projectId]),
   ]);
   const periods = periodsOf(weeks.rows);
@@ -761,23 +638,8 @@ export async function planTasks(db, auth, projectId) {
   const minutes = (pct) => (hours && Number(pct) > 0 ? Math.round((hours * 60 * Number(pct)) / 100) : null);
   return {
     groups: groups.rows.map((g) => {
-      const own = templates.rows.filter((t) => Number(t.task_group_id) === g.id);
       const groupMinutes = minutes(g.effort_percentage);
-      // a template task with its own effort % uses it; the rest of the group's hours is shared evenly by the others
-      const fixed = own.reduce((n, t) => n + (minutes(t.effort_percentage) ?? 0), 0);
-      const open = own.filter((t) => minutes(t.effort_percentage) === null).length;
-      const share = groupMinutes && open ? Math.max(0, Math.round((groupMinutes - fixed) / open)) || null : null;
-      const tasks = own.length
-        ? own.map((t) => ({
-            templateId: t.id,
-            title: t.task_title,
-            description: t.description,
-            taskTypeId: t.task_type_id,
-            taskTypeName: t.task_type_name,
-            estimatedMinutes: minutes(t.effort_percentage) ?? share,
-            existing: have.has(t.task_title.toLowerCase()),
-          }))
-        : [{ templateId: null, title: g.name, description: null, taskTypeId: null, taskTypeName: null, estimatedMinutes: groupMinutes, existing: have.has(g.name.toLowerCase()) }];
+      const tasks = [{ title: g.name, description: null, taskTypeId: null, taskTypeName: null, estimatedMinutes: groupMinutes, existing: have.has(g.name.toLowerCase()) }];
       return {
         taskGroupId: g.id,
         name: g.name,
@@ -791,8 +653,7 @@ export async function planTasks(db, auth, projectId) {
 }
 
 /**
- * Creates every task of the picked planned task groups – the group's template tasks (type included), or one task
- * named after the group when it has none – with the dates of the group's first planned period
+ * Creates one task per picked planned task group, named after the group, with the dates of the group's first planned period
  * (09:00 on its first day to 18:00 on its last). Tasks that already exist on the project are skipped. All or nothing.
  */
 export async function createFromPlan(db, auth, body) {

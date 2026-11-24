@@ -12,23 +12,19 @@ const activeFilter = {
 
 
 /**
- * A skill (Parameters → SKILL) in use by a user or a template task cannot be deleted: change or remove
+ * A skill (Parameters → SKILL) in use by a user cannot be deleted: change or remove
  * it there first. (Project tasks only keep a copy – their link goes with the skill.)
  */
 async function assertSkillUnused(db, id, action) {
   const { rows } = await db.query(
     `SELECT (SELECT string_agg(u.name, ', ' ORDER BY u.name) FROM user_skills us JOIN users u ON u.id = us.user_id WHERE us.skill_id = $1) AS users,
-            (SELECT string_agg(DISTINCT pt.name, ', ') FROM project_type_task_template_roles tr
-               JOIN project_type_task_templates tt ON tt.id = tr.task_template_id JOIN project_types pt ON pt.id = tt.project_type_id
-              WHERE tr.role_id = $1) AS templates,
-            (SELECT count(*)::int FROM project_type_task_template_roles WHERE role_id = $1) AS template_tasks`,
+            0 AS unused`,
     [id],
   );
   const u = rows[0];
-  if (!u.users && !u.template_tasks) return;
+  if (!u.users) return;
   const where = [
     u.users && `the user(s) ${u.users} (Users → Skills)`,
-    u.template_tasks && `${u.template_tasks} template task(s) of ${u.templates} (Business Division → Task Templates)`,
   ].filter(Boolean);
   throw conflict(`This skill is used by ${where.join(' and ')}. Change or remove it there first, then it can be ${action}.`);
 }
@@ -97,7 +93,7 @@ export const CONFIG_DEFS = [
         const { rowCount } = await db.query(`SELECT 1 FROM parameter_types WHERE code = $1`, [body.type]);
         if (!rowCount) throw badRequest('Select a parameter from the Parameters tab', [{ field: 'type', message: 'is not a parameter' }]);
       }
-      // a skill that users / template tasks use cannot become another type
+      // a skill that users use cannot become another type
       if (before?.type === 'SKILL' && body.type && body.type !== 'SKILL') await assertSkillUnused(db, id, 'changed to another type');
       // currencies are matched by their ISO code (value) – keep it upper case
       if ((body.type ?? before?.type) === 'CURRENCY' && body.value) body.value = body.value.trim().toUpperCase();
@@ -175,8 +171,7 @@ export const CONFIG_DEFS = [
     select: `SELECT x.id, x.name, x.description, x.task_group_id, g.name AS task_group_name,
                     x.is_active, x.created_at, x.updated_at,
                     (EXISTS (SELECT 1 FROM timesheets ts WHERE ts.task_type_id = x.id)
-                     OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)
-                     OR EXISTS (SELECT 1 FROM project_type_task_templates tt WHERE tt.task_type_id = x.id)) AS in_use
+                     OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)) AS in_use
                FROM task_types x
                JOIN task_groups g ON g.id = x.task_group_id`,
     beforeSave: async (db, body, id) => {
@@ -203,7 +198,7 @@ export const CONFIG_DEFS = [
     sort: { name: 's.name', taskGroupName: 's.task_group_name' },
     defaultSort: 's.task_group_name, s.name',
     uniqueMessage: 'A task type with this name already exists in the selected group',
-    inUseMessage: 'This task type is used in timesheets, tasks or templates – switch it inactive instead',
+    inUseMessage: 'This task type is used in timesheets or tasks – switch it inactive instead',
   },
   {
     name: 'task-categories',

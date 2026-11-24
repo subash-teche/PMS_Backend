@@ -7,9 +7,12 @@ import { config } from '../config/env.js';
 // Security headers, CORS for the React app, and a global rate limit
 // (routes can tighten it with `config: { rateLimit: {...} }`, e.g. login).
 async function securityPlugin(fastify) {
-  await fastify.register(helmet, {
-    // Swagger UI needs inline scripts/styles; the API itself only returns JSON.
-    contentSecurityPolicy: false,
+  // Security headers on every response. Only the Swagger UI (/docs) needs inline scripts/styles,
+  // so the content-security-policy is relaxed there and strict for the JSON API.
+  await fastify.register(helmet, { global: false });
+  fastify.addHook('onRequest', async (req, reply) => {
+    const docs = req.url.startsWith('/docs');
+    await reply.helmet(docs ? { contentSecurityPolicy: false } : undefined);
   });
 
   await fastify.register(cors, {

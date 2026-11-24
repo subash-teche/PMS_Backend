@@ -245,7 +245,7 @@ export const effortsSchema = {
 
 export const templateProjectsSchema = {
   tags,
-  summary: 'Add from template: your ongoing projects (not completed / cancelled)',
+  summary: 'Your ongoing projects (not completed / cancelled), for adding tasks from the plan',
   response: {
     200: {
       type: 'array',
@@ -258,41 +258,8 @@ export const templateProjectsSchema = {
           status: { type: 'string' },
           projectTypeName: nullableStr,
           customerName: nullableStr,
-          templateCount: { type: 'integer' },
           ownerId: nullableInt,
           peopleIds: { type: 'array', items: { type: 'integer' }, description: 'owner + members – who tasks can be assigned to' },
-        },
-      },
-    },
-  },
-};
-
-export const projectTemplatesSchema = {
-  tags,
-  summary: "Add from template: the template tasks of the project's type",
-  params: { type: 'object', required: ['projectId'], properties: { projectId: { type: 'integer', minimum: 1 } } },
-  response: {
-    200: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'integer' },
-          title: { type: 'string' },
-          description: nullableStr,
-          effortPercentage: { type: ['number', 'null'] },
-          taskGroupId: { type: 'integer' },
-          taskGroupName: { type: 'string' },
-          taskTypeId: { type: 'integer' },
-          taskTypeName: { type: 'string' },
-          estimatedMinutes: nullableInt,
-          skills: { type: 'array', items: { type: 'string' } },
-          existing: { type: 'integer', description: 'tasks of the project with the same name' },
-          matches: {
-            type: 'array',
-            description: 'project people (owner / members) with one of the skills the task needs – best first',
-            items: { type: 'object', properties: { userId: { type: 'integer' }, name: { type: 'string' }, skills: { type: 'array', items: { type: 'string' } } } },
-          },
         },
       },
     },
@@ -318,10 +285,10 @@ export const planTasksSchema = {
               estimatedMinutes: nullableInt,
               tasks: {
                 type: 'array',
-                description: 'the tasks this group gets: its template tasks, or one named after the group',
+                description: 'the tasks this group gets: one named after the group',
                 items: {
                   type: 'object',
-                  properties: { templateId: nullableInt, title: { type: 'string' }, taskTypeName: nullableStr, estimatedMinutes: nullableInt, existing: { type: 'boolean' } },
+                  properties: { title: { type: 'string' }, taskTypeName: nullableStr, estimatedMinutes: nullableInt, existing: { type: 'boolean' } },
                 },
               },
               periods: { type: 'array', items: { type: 'object', properties: { start: { type: 'string' }, end: { type: 'string' }, weeks: { type: 'integer' } } } },
@@ -370,47 +337,6 @@ export const fromPlanSchema = {
     },
   },
   response: { 201: { type: 'object', properties: { created: { type: 'integer' }, skipped: { type: 'integer' }, ids: { type: 'array', items: { type: 'integer' } } } } },
-};
-
-export const fromTemplateSchema = {
-  tags,
-  summary: 'Create tasks on a project from picked template tasks',
-  body: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['projectId', 'items'],
-    properties: {
-      projectId: { type: 'integer', minimum: 1 },
-      ownerId: fields.ownerId,
-      assignedTo: { ...fields.assignedTo, description: 'default assignee (each item can override)' },
-      priority: fields.priority,
-      isContinuous: fields.isContinuous,
-      plannedStart: fields.plannedStart,
-      plannedEnd: fields.plannedEnd,
-      items: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 200,
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['templateId'],
-          // per task – each falls back to the common value above
-          properties: {
-            templateId: { type: 'integer', minimum: 1 },
-            ownerId: fields.ownerId,
-            assignedTo: fields.assignedTo,
-            priority: fields.priority,
-            isContinuous: fields.isContinuous,
-            plannedStart: fields.plannedStart,
-            plannedEnd: fields.plannedEnd,
-            estimatedMinutes: fields.estimatedMinutes,
-          },
-        },
-      },
-    },
-  },
-  response: { 201: { type: 'object', properties: { created: { type: 'integer' }, ids: { type: 'array', items: { type: 'integer' } } } } },
 };
 
 export const deleteSchema = { tags, summary: 'Delete a task and its subtasks', params: idParams, response: { 204: { type: 'null' } } };

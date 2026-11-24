@@ -6,7 +6,6 @@ import { escapeLike, paginationQuerySchema, pagedResponseSchema, WhereBuilder } 
 /*
  * Business Division: a project division with its project types, edited on one form and saved
  * together. A project type used by projects cannot be removed – make it inactive instead.
- * (A type's task template is edited on the project type page.)
  * Quote rates: the division's rate per hour in each currency; a project's estimated hours =
  * estimate amount / the rate in the project's currency.
  */
@@ -55,7 +54,6 @@ const typeOut = {
     description: { type: ['string', 'null'] },
     isActive: { type: 'boolean' },
     projectCount: { type: 'integer' },
-    taskCount: { type: 'integer' },
   },
 };
 const item = {
@@ -78,8 +76,7 @@ const SELECT = `
          (SELECT count(*)::int FROM projects p WHERE p.project_division_id = d.id) AS project_count,
          COALESCE((SELECT json_agg(json_build_object(
                      'id', t.id, 'name', t.name, 'description', t.description, 'isActive', t.is_active,
-                     'projectCount', (SELECT count(*) FROM projects p WHERE p.project_type_id = t.id),
-                     'taskCount', (SELECT count(*) FROM project_type_task_templates tt WHERE tt.project_type_id = t.id))
+                     'projectCount', (SELECT count(*) FROM projects p WHERE p.project_type_id = t.id))
                    ORDER BY t.is_active DESC, t.name)
                      FROM project_types t WHERE t.project_division_id = d.id), '[]') AS project_types,
          COALESCE((SELECT json_agg(json_build_object('currency', trim(q.currency), 'ratePerHour', q.rate_per_hour) ORDER BY q.currency)
@@ -139,7 +136,7 @@ async function saveTypes(client, divisionId, types, userId) {
   const removed = existing.filter((e) => !keep.has(e.id));
   const used = removed.find((e) => e.in_use);
   if (used) throw conflict(`"${used.name}" is used by projects – make it inactive instead of removing it`);
-  if (removed.length) await client.query(`DELETE FROM project_types WHERE id = ANY($1)`, [removed.map((e) => e.id)]); // template + split go with it
+  if (removed.length) await client.query(`DELETE FROM project_types WHERE id = ANY($1)`, [removed.map((e) => e.id)]); // its split goes with it
 
   for (const t of types.filter((x) => x.id)) {
     await client.query(`UPDATE project_types SET name = name || ' ~' || id WHERE id = $1`, [t.id]); // allow swapping names

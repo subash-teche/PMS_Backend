@@ -592,7 +592,6 @@ function pickColumns(body) {
 /**
  * Creates a project and, from its project type:
  *   - copies the default effort % per task group into the project estimate
- *   - creates the template tasks
  * The owner is added as a project member with edit access.
  */
 /**
@@ -633,28 +632,6 @@ export async function createProject(db, auth, input) {
          FROM project_type_default_estimates WHERE project_type_id = $2`,
       [projectId, body.projectTypeId, auth.userId],
     );
-    const tasks = await client.query(
-      // task estimate = project estimated hours × the task's effort % (when both are known)
-      `INSERT INTO tasks (kind, customer_id, project_id, task_group_id, task_type_id, name, description, owner_id, status,
-                          estimated_minutes, display_order, created_by, updated_by, task_category_id)
-       SELECT 'project', $2, $1, task_group_id, task_type_id, task_title, description, $3, 'to_do',
-              ROUND($6::numeric * 60 * effort_percentage / 100)::int, sort_order, $5, $5,
-              (SELECT c.id FROM task_categories c WHERE c.is_project ORDER BY c.is_active DESC, c.display_order, c.id LIMIT 1)
-         FROM project_type_task_templates WHERE project_type_id = $4
-        ORDER BY sort_order`,
-      [projectId, body.customerId ?? null, body.ownerId, body.projectTypeId, auth.userId, body.estimatedHours ?? null],
-    );
-    // each task keeps the task roles (skills) of its template task
-    await client.query(
-      `INSERT INTO task_skills (task_id, skill_id)
-       SELECT DISTINCT t.id, r.role_id
-         FROM tasks t
-         JOIN project_type_task_templates tt ON tt.project_type_id = $2 AND tt.task_title = t.name
-         JOIN project_type_task_template_roles r ON r.task_template_id = tt.id
-        WHERE t.project_id = $1
-       ON CONFLICT DO NOTHING`,
-      [projectId, body.projectTypeId],
-    );
     await client.query(
       `INSERT INTO project_members (project_id, user_id, access_level, created_by, updated_by) VALUES ($1, $2, 'edit', $3, $3)`,
       [projectId, body.ownerId, auth.userId],
@@ -664,7 +641,7 @@ export async function createProject(db, auth, input) {
       entityId: projectId,
       action: 'create',
       userId: auth.userId,
-      message: `Project ${code} created with ${tasks.rowCount} template task(s)`,
+      message: `Project ${code} created`,
     });
     return projectId;
   });
@@ -895,7 +872,7 @@ export async function addReview(db, auth, id, input) {
   return listReviews(db, id);
 }
 
-/** Deletes a project with its template tasks; refused once time has been logged against it. */
+/** Deletes a project with its tasks; refused once time has been logged against it. */
 export async function deleteProject(db, auth, id) {
   const project = await getProject(db, auth, id);
   try {

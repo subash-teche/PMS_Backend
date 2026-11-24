@@ -8,7 +8,7 @@ import { can } from '../auth/auth-context.js';
  * Task groups. A group is saved on its own; its task types live on the Task Types screen
  * (one menu, one screen each). The optional `taskTypes` array is kept for callers that still
  * save a group with its types in one transaction – it needs the Task Types permission.
- * A task type that is used (timesheets, project tasks, task templates) cannot be removed –
+ * A task type that is used (timesheets, project tasks) cannot be removed –
  * make it inactive instead.
  */
 
@@ -58,10 +58,9 @@ const item = {
   },
 };
 
-// a task type is "in use" when timesheets, project tasks or task templates point at it
+// a task type is "in use" when timesheets or project tasks point at it
 const IN_USE = (alias) => `(EXISTS (SELECT 1 FROM timesheets ts WHERE ts.task_type_id = ${alias}.id)
-                       OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = ${alias}.id)
-                       OR EXISTS (SELECT 1 FROM project_type_task_templates tt WHERE tt.task_type_id = ${alias}.id))`;
+                       OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = ${alias}.id))`;
 
 const SELECT = `
   SELECT g.id, g.name, g.updated_at,
@@ -107,7 +106,7 @@ async function saveTypes(client, groupId, types, userId) {
 
   const removed = existing.filter((e) => !keep.has(e.id));
   const used = removed.find((e) => e.in_use);
-  if (used) throw conflict(`"${used.name}" is used by timesheets, tasks or templates – make it inactive instead of removing it`);
+  if (used) throw conflict(`"${used.name}" is used by timesheets or tasks – make it inactive instead of removing it`);
   if (removed.length) await client.query(`DELETE FROM task_types WHERE id = ANY($1)`, [removed.map((e) => e.id)]);
 
   // free the names of renamed types first so a swap of two names doesn't hit the unique key

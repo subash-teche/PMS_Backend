@@ -14,21 +14,15 @@ export default async function tasksRoutes(fastify) {
 
   fastify.get('/options', { schema: schemas.optionsSchema, preHandler: authorize(SCREENS.TASKS, 'view') }, (req) => service.taskOptions(db, req.auth));
 
-  // add from template (before "/:id")
-  fastify.get('/template-projects', { schema: schemas.templateProjectsSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, (req) =>
+  // add from the plan (before "/:id")
+  fastify.get('/plan-projects', { schema: schemas.templateProjectsSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, (req) =>
     service.templateProjects(db, req.auth),
   );
-  fastify.get('/template-projects/:projectId/templates', { schema: schemas.projectTemplatesSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, (req) =>
-    service.projectTemplates(db, req.auth, req.params.projectId),
-  );
-  fastify.get('/template-projects/:projectId/plan', { schema: schemas.planTasksSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, (req) =>
+  fastify.get('/plan-projects/:projectId/plan', { schema: schemas.planTasksSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, (req) =>
     service.planTasks(db, req.auth, req.params.projectId),
   );
   fastify.post('/from-plan', { schema: schemas.fromPlanSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, async (req, reply) =>
     reply.status(201).send(await service.createFromPlan(db, req.auth, req.body)),
-  );
-  fastify.post('/from-template', { schema: schemas.fromTemplateSchema, preHandler: authorize(SCREENS.TASKS, 'create') }, async (req, reply) =>
-    reply.status(201).send(await service.createFromTemplate(db, req.auth, req.body)),
   );
 
   fastify.get('/:id', { schema: schemas.getSchema, preHandler: authorize(SCREENS.TASKS, 'view') }, (req) => service.getTask(db, req.auth, req.params.id));

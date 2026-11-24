@@ -18,6 +18,8 @@ function newRefreshToken(remember) {
 export const isRememberToken = (token) => token.startsWith('r.');
 
 async function storeRefreshToken(db, userId, token, expiresAt) {
+  // tidy up: this user's tokens that can no longer be used (revoked or expired) are removed
+  await db.query(`DELETE FROM refresh_tokens WHERE user_id = $1 AND (revoked_at IS NOT NULL OR expires_at < now())`, [userId]);
   await db.query(`INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`, [
     userId,
     sha256(token),

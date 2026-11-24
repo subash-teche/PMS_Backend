@@ -97,7 +97,6 @@ async function run() {
     await deleteTasks(await ids(`SELECT id FROM tasks WHERE task_type_id = ANY($1) OR task_group_id = ANY($2)`, [taskTypeIds, groupIds]), 'removed task types / groups');
     await del('daily plan items on removed task types', `DELETE FROM daily_plan_items WHERE task_type_id = ANY($1)`, [taskTypeIds]);
     await del('weekly plan entries on removed task types', `DELETE FROM weekly_plan_entries WHERE task_type_id = ANY($1)`, [taskTypeIds]);
-    await del('template tasks on removed task types / groups', `DELETE FROM project_type_task_templates WHERE task_type_id = ANY($1) OR task_group_id = ANY($2)`, [taskTypeIds, groupIds]);
     await del('review progress rows of removed task groups', `DELETE FROM project_review_task_groups WHERE task_group_id = ANY($1)`, [groupIds]);
     await del('project estimate rows of removed task groups', `DELETE FROM project_task_group_estimates WHERE task_group_id = ANY($1)`, [groupIds]);
     await del('default split rows of removed task groups', `DELETE FROM project_type_default_estimates WHERE task_group_id = ANY($1)`, [groupIds]);
@@ -106,10 +105,9 @@ async function run() {
   }
 
   // ---------------------------------------------------------------- 3. project types, divisions, roles
-  await del('project types (with their templates)', `DELETE FROM project_types WHERE id = ANY($1)`, [projectTypeIds]);
+  await del('project types', `DELETE FROM project_types WHERE id = ANY($1)`, [projectTypeIds]);
   await del('project divisions (with their quote rates)', `DELETE FROM project_divisions WHERE id = ANY($1)`, [divisionIds]);
   if (roleIds.length) {
-    await del('template role links of removed roles', `DELETE FROM project_type_task_template_roles WHERE role_id = ANY($1)`, [roleIds]);
     await del('task roles', `DELETE FROM lookups WHERE id = ANY($1)`, [roleIds]);
   }
 }

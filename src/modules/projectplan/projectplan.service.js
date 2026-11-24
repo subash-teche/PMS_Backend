@@ -140,7 +140,7 @@ export async function getPlan(db, auth, id) {
     ),
     // each task of the groups: its planned dates, when it started and when it was completed
     db.query(
-      `SELECT t.id, t.task_group_id, t.name, t.status, t.is_continuous, u.name AS assigned_to_name,
+      `SELECT t.id, t.task_group_id, t.task_type_id, tty.name AS task_type_name, t.name, t.status, t.is_continuous, u.name AS assigned_to_name,
               (t.planned_start AT TIME ZONE $2)::date::text AS planned_start,
               (t.planned_end AT TIME ZONE $2)::date::text AS planned_end,
               LEAST((t.actual_start AT TIME ZONE $2)::date, (SELECT min(x.work_date) FROM timesheets x WHERE x.task_id = t.id))::text AS started,
@@ -151,7 +151,7 @@ export async function getPlan(db, auth, id) {
               (SELECT count(*)::int FROM task_subtasks s WHERE s.task_id = t.id AND s.is_done) AS subtask_done,
               COALESCE((SELECT json_agg(json_build_object('date', q.d::text, 'minutes', q.m) ORDER BY q.d)
                           FROM (SELECT x.work_date AS d, sum(x.minutes)::int AS m FROM timesheets x WHERE x.task_id = t.id GROUP BY x.work_date) q), '[]'::json) AS logs
-         FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to
+         FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to LEFT JOIN task_types tty ON tty.id = t.task_type_id
         WHERE t.project_id = $1 AND t.is_active AND t.task_group_id IS NOT NULL
         ORDER BY t.task_group_id, t.display_order NULLS LAST, t.id`,
       [id, safeZone(auth.timeZone)],
@@ -181,6 +181,8 @@ export async function getPlan(db, auth, id) {
     tasks: tasks.rows.map((r) => ({
       id: r.id,
       taskGroupId: Number(r.task_group_id),
+      taskTypeId: r.task_type_id == null ? null : Number(r.task_type_id),
+      taskTypeName: r.task_type_name ?? null,
       name: r.name,
       status: r.status,
       isContinuous: r.is_continuous,

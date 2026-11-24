@@ -50,7 +50,7 @@ const LISTS = {
             LEFT JOIN lookups g ON g.id = rg.grade_id
            WHERE u.is_active OR $1 ORDER BY u.name`,
   'task-groups': `SELECT id, name FROM task_groups ORDER BY name`,
-  // groups a project estimate / project type template can use: the ones of a project category, or of no category yet
+  // groups a project estimate / project type split can use: the ones of a project category, or of no category yet
   'project-task-groups': `SELECT g.id, g.name FROM task_groups g
                            WHERE EXISTS (SELECT 1 FROM task_category_groups l JOIN task_categories c ON c.id = l.task_category_id WHERE l.task_group_id = g.id AND c.is_project)
                               OR NOT EXISTS (SELECT 1 FROM task_category_groups l WHERE l.task_group_id = g.id)

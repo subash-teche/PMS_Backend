@@ -43,6 +43,8 @@ const plan = {
         properties: {
           id: { type: 'integer' },
           taskGroupId: { type: 'integer' },
+          taskTypeId: { type: ['integer', 'null'] },
+          taskTypeName: { type: ['string', 'null'] },
           name: { type: 'string' },
           status: { type: 'string' },
           isContinuous: { type: 'boolean' },

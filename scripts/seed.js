@@ -139,23 +139,6 @@ const DEFAULT_ESTIMATES = {
   'Website Content Support': { 'Content Creation': 80, 'Quality Assurance': 10, 'Project Management': 10 },
   'Website Tech & Content': { Development: 40, 'Content Creation': 35, 'Quality Assurance': 15, 'Project Management': 10 },
 };
-// project type -> [task group, task type, task title]
-const TASK_TEMPLATES = {
-  'Website Development': [
-    ['Analysis', 'Requirement Analysis', 'Requirement gathering & sign-off'],
-    ['UX/UI', 'Wireframes', 'Wireframes'],
-    ['UX/UI', 'UI Design', 'Visual design'],
-    ['Development', 'Front-end Development', 'Front-end build'],
-    ['Development', 'Back-end Development', 'Back-end & CMS setup'],
-    ['Quality Assurance', 'Functional Testing', 'Testing'],
-    ['Deployment & Training', 'Deployment', 'Go-live'],
-    ['Project Management', 'Project Management', 'Project management'],
-  ],
-  'Website Tech Support': [
-    ['Post Live Support', 'Post Live Support', 'Monthly support'],
-    ['Project Management', 'Client Meetings', 'Monthly review call'],
-  ],
-};
 const CUSTOMERS = [
   ['CUS-001', 'Acme Retail Pvt Ltd'], ['CUS-002', 'Zen Foods'], ['CUS-003', 'Swan Solutions'],
   ['CUS-004', 'BlueOcean Logistics'], ['CUS-005', 'Nova Healthcare'], ['CUS-006', 'Metro Builders'],
@@ -278,16 +261,6 @@ try {
       await ensure('project_type_default_estimates', { project_type_id: projectTypeIds[type], task_group_id: groupIds[group] }, { effort_percentage: pct });
     }
   }
-  for (const [type, tasks] of Object.entries(TASK_TEMPLATES)) {
-    for (const [i, [group, taskType, title]] of tasks.entries()) {
-      await ensure(
-        'project_type_task_templates',
-        { project_type_id: projectTypeIds[type], task_title: title },
-        { task_group_id: groupIds[group], task_type_id: typeIds[`${group}/${taskType}`], sort_order: i + 1 },
-      );
-    }
-  }
-
   for (const [code, name] of CUSTOMERS) {
     await q(`INSERT INTO customers (code, name) VALUES ($1, $2) ON CONFLICT (code) DO NOTHING`, [code, name]);
   }

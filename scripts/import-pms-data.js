@@ -199,22 +199,6 @@ async function run() {
   const offTypes = await q(`UPDATE project_types SET is_active = false WHERE is_active AND NOT (id = ANY($1)) RETURNING name`, [Object.values(projectTypeIds)]);
   offTypes.rows.forEach((r) => log.deactivated.push(`project type "${r.name}"`));
 
-  // Website Development template: replaced by Sheet2
-  const ptId = projectTypeIds[TEMPLATE_TYPE];
-  await q(`DELETE FROM project_type_task_templates WHERE project_type_id = $1`, [ptId]);
-  for (const [i, [g, type, approvals, title, description, roles]] of TEMPLATE.entries()) {
-    const ap = approvals.toLowerCase();
-    const row = await one(
-      `INSERT INTO project_type_task_templates (project_type_id, task_group_id, task_type_id, task_title, description, manager_approval, client_approval, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [ptId, groupIds[g], typeIds[`${g}|${type}`], title, description, ap.includes('mgr'), ap.includes('client'), i + 1],
-    );
-    for (const r of roles.split(';').map((x) => x.trim()).filter(Boolean)) {
-      if (!roleIds[r]) throw new Error(`Unknown role "${r}" in template task "${title}"`);
-      await q(`INSERT INTO project_type_task_template_roles (task_template_id, role_id) VALUES ($1, $2)`, [row.id, roleIds[r]]);
-    }
-  }
-  log.updated.push(`${TEMPLATE_TYPE} template: ${TEMPLATE.length} tasks`);
 }
 
 try {

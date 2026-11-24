@@ -70,7 +70,7 @@ scripts/                      create-db, migrate, seed
 | Projects | `GET /projects` (search, filters, tabs all/mine/owned, sort, paging) · `GET /projects/summary` · `GET /projects/:id` · `POST /projects` · `PUT /projects/:id` · `DELETE /projects/:id` |
 | Masters (dropdowns) | `GET /masters/{customers,users,project-divisions,project-types,sites,shifts,currencies}` · `GET /masters/lookups/:type` |
 
-**Creating a project** generates the code (`PRJ-1001`, …), copies the project type's default effort % into `project_task_group_estimates`, creates the type's template tasks, and adds the owner as a project member — all in one transaction, written to `audit_logs`.
+**Creating a project** generates the code (`PRJ-1001`, …), copies the project type's default effort % into `project_task_group_estimates`, and adds the owner as a project member — all in one transaction, written to `audit_logs`.
 
 Errors always look like `{ statusCode, code, message, details? }`; `details` lists field errors for `400 VALIDATION_ERROR`.
 
