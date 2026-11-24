@@ -20,11 +20,7 @@
     "predb:seed": "node scripts/check-node.cjs",
     "db:seed": "node --env-file-if-exists=.env scripts/seed.js",
     "db:setup": "npm run db:create && npm run db:migrate && npm run db:seed",
-<<<<<<< HEAD
     "test": "node --env-file-if-exists=.env --test \"test/**/*.test.js\"",
-=======
-    "test": "node --env-file-if-exists=.env --test \"test/*.test.js\"",
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
     "db:import-pms": "node --env-file-if-exists=.env scripts/import-pms-data.js",
     "db:cleanup-masters": "node --env-file-if-exists=.env scripts/cleanup-old-masters.js",
     "db:import-tm": "node --env-file-if-exists=.env scripts/import-tm.js",

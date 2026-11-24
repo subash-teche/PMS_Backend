@@ -599,119 +599,6 @@ async function ongoingProject(db, auth, projectId) {
   return p;
 }
 
-<<<<<<< HEAD
-=======
-/** The template tasks of the project's type, with the estimate for this project and how often each is already a task. */
-export async function projectTemplates(db, auth, projectId) {
-  await ongoingProject(db, auth, projectId);
-  const { rows } = await db.query(
-    `SELECT tt.id, tt.task_title, tt.description, tt.effort_percentage, tt.task_group_id, g.name AS task_group_name,
-            tt.task_type_id, ty.name AS task_type_name,
-            CASE WHEN p.estimated_hours > 0 AND tt.effort_percentage > 0
-                 THEN ROUND(p.estimated_hours * 60 * tt.effort_percentage / 100)::int END AS estimated_minutes,
-            COALESCE((SELECT array_agg(l.name ORDER BY l.display_order, l.name) FROM project_type_task_template_roles r
-                        JOIN parameter_values l ON l.id = r.role_id WHERE r.task_template_id = tt.id), '{}') AS skills,
-            COALESCE((SELECT array_agg(r.role_id) FROM project_type_task_template_roles r WHERE r.task_template_id = tt.id), '{}') AS skill_ids,
-            (SELECT count(*)::int FROM tasks t WHERE t.project_id = p.id AND t.is_active AND lower(t.name) = lower(tt.task_title)) AS existing
-       FROM projects p
-       JOIN project_type_task_templates tt ON tt.project_type_id = p.project_type_id
-       JOIN task_groups g ON g.id = tt.task_group_id
-       JOIN task_types ty ON ty.id = tt.task_type_id
-      WHERE p.id = $1
-      ORDER BY g.name, tt.sort_order, tt.task_title`,
-    [projectId],
-  );
-  // project people (owner + members, active) and their skills (Users → Skills)
-  const { rows: people } = await db.query(
-    `SELECT u.id, u.name,
-            COALESCE(json_agg(json_build_object('id', l.id, 'name', l.name)) FILTER (WHERE l.id IS NOT NULL), '[]') AS skills
-       FROM users u
-       LEFT JOIN user_skills us ON us.user_id = u.id
-       LEFT JOIN parameter_values l ON l.id = us.skill_id
-      WHERE u.is_active
-        AND (u.id = (SELECT owner_id FROM projects WHERE id = $1)
-             OR u.id IN (SELECT pm.user_id FROM project_members pm WHERE pm.project_id = $1))
-      GROUP BY u.id, u.name ORDER BY u.name`,
-    [projectId],
-  );
-  // people who have one of the task's skills – most matching skills first
-  const matchesFor = (skillIds) =>
-    people
-      .map((p) => {
-        const need = skillIds.map(Number);
-        const shared = p.skills.filter((sk) => need.includes(Number(sk.id)));
-        return { userId: p.id, name: p.name, skills: shared.map((sk) => sk.name), count: shared.length };
-      })
-      .filter((m) => m.count > 0)
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-      .map(({ userId, name, skills }) => ({ userId, name, skills }));
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.task_title,
-    description: r.description,
-    effortPercentage: r.effort_percentage,
-    taskGroupId: r.task_group_id,
-    taskGroupName: r.task_group_name,
-    taskTypeId: r.task_type_id,
-    taskTypeName: r.task_type_name,
-    estimatedMinutes: r.estimated_minutes,
-    skills: r.skills,
-    existing: r.existing,
-    matches: matchesFor(r.skill_ids),
-  }));
-}
-
-/**
- * Creates tasks on the project from the picked template tasks. Common values (owner, dates)
- * apply to all; each picked task can have its own assignee. All or nothing.
- */
-export async function createFromTemplate(db, auth, body) {
-  await ongoingProject(db, auth, body.projectId);
-  const { rows: cat } = await db.query(`SELECT id FROM task_categories WHERE is_project AND is_active ORDER BY display_order, id LIMIT 1`);
-  if (!cat[0]) throw badRequest('Add an active task category that needs a project (Task → Task Category) first');
-  const templates = await projectTemplates(db, auth, body.projectId);
-  const values = [];
-  for (const [i, item] of body.items.entries()) {
-    const tpl = templates.find((t) => t.id === item.templateId);
-    if (!tpl) throw badRequest(`Task ${i + 1} is not in this project's template`, [{ field: `items.${i}.templateId`, message: 'not in the template' }]);
-    // each picked task has its own people / plan; anything not sent falls back to the common value
-    const own = (k, fallback) => (item[k] !== undefined ? item[k] : body[k] !== undefined ? body[k] : fallback);
-    try {
-      values.push(
-        await validate(db, auth, {
-          name: tpl.title,
-          description: tpl.description,
-          categoryId: cat[0].id,
-          projectId: body.projectId,
-          taskGroupId: tpl.taskGroupId,
-          taskTypeId: tpl.taskTypeId,
-          ownerId: own('ownerId', auth.userId),
-          assignedTo: own('assignedTo', auth.userId),
-          estimatedMinutes: item.estimatedMinutes !== undefined ? item.estimatedMinutes : tpl.estimatedMinutes,
-          status: 'to_do',
-          plannedStart: own('plannedStart', null),
-          plannedEnd: own('plannedEnd', null),
-          completedOn: null,
-        }),
-      );
-    } catch (err) {
-      // say which picked task is wrong
-      if (err.statusCode === 400 || err.statusCode === 403) {
-        err.message = `${tpl.title}: ${err.message}`;
-        err.details = (err.details ?? []).map((d) => ({ ...d, field: `items.${i}.${d.field}` }));
-      }
-      throw err;
-    }
-  }
-  const ids = await db.tx(async (client) => {
-    const out = [];
-    for (const v of values) out.push(await insertTask(client, auth, v, `Task "${v.name}" created from the project template`));
-    return out;
-  });
-  return { created: ids.length, ids };
-}
-
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
 /**
  * The project's planned task groups, for "add tasks from the plan": each group's periods and the tasks it gets –
  * one task named after the group.
@@ -726,19 +613,7 @@ export async function planTasks(db, auth, projectId) {
         WHERE e.project_id = $1 AND e.effort_percentage > 0 ORDER BY e.effort_percentage DESC, g.name`,
       [projectId],
     ),
-<<<<<<< HEAD
-    db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_week_plans WHERE project_id = $1`, [projectId]),
-=======
     db.query(`SELECT task_group_id, week_start::text AS week_start FROM project_plan_weeks WHERE project_id = $1`, [projectId]),
-    db.query(
-      `SELECT tt.id, tt.task_title, tt.description, tt.task_group_id, tt.task_type_id, ty.name AS task_type_name, tt.effort_percentage
-         FROM projects p
-         JOIN project_type_task_templates tt ON tt.project_type_id = p.project_type_id
-         JOIN task_types ty ON ty.id = tt.task_type_id
-        WHERE p.id = $1 ORDER BY tt.sort_order, tt.task_title`,
-      [projectId],
-    ),
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
     db.query(`SELECT lower(name) AS name FROM tasks WHERE project_id = $1 AND is_active`, [projectId]),
   ]);
   const periods = periodsOf(weeks.rows);

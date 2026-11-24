@@ -170,13 +170,7 @@ export const CONFIG_DEFS = [
     computed: { taskGroupName: { type: ['string', 'null'] }, inUse: { type: 'boolean' } },
     select: `SELECT x.id, x.name, x.description, x.task_group_id, g.name AS task_group_name,
                     x.is_active, x.created_at, x.updated_at,
-<<<<<<< HEAD
-                    (EXISTS (SELECT 1 FROM timesheets ts WHERE ts.task_type_id = x.id)
-                     OR EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)) AS in_use
-=======
-                    (EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)
-                     OR EXISTS (SELECT 1 FROM project_type_task_templates tt WHERE tt.task_type_id = x.id)) AS in_use
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
+                    (EXISTS (SELECT 1 FROM tasks tk WHERE tk.task_type_id = x.id)) AS in_use
                FROM task_types x
                JOIN task_groups g ON g.id = x.task_group_id`,
     beforeSave: async (db, body, id) => {

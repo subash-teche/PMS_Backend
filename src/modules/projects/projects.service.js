@@ -633,31 +633,6 @@ export async function createProject(db, auth, input) {
          FROM project_type_effort_defaults WHERE project_type_id = $2`,
       [projectId, body.projectTypeId, auth.userId],
     );
-<<<<<<< HEAD
-=======
-    const tasks = await client.query(
-      // task estimate = project estimated hours × the task's effort % (when both are known)
-      `INSERT INTO tasks (project_id, task_group_id, task_type_id, name, description, owner_id, status,
-                          estimated_minutes, display_order, created_by, updated_by, task_category_id)
-       SELECT $1, task_group_id, task_type_id, task_title, description, $2, 'to_do',
-              ROUND($5::numeric * 60 * effort_percentage / 100)::int, sort_order, $4, $4,
-              (SELECT c.id FROM task_categories c WHERE c.is_project ORDER BY c.is_active DESC, c.display_order, c.id LIMIT 1)
-         FROM project_type_task_templates WHERE project_type_id = $3
-        ORDER BY sort_order`,
-      [projectId, body.ownerId, body.projectTypeId, auth.userId, body.estimatedHours ?? null],
-    );
-    // each task keeps the task roles (skills) of its template task
-    await client.query(
-      `INSERT INTO task_skills (task_id, skill_id)
-       SELECT DISTINCT t.id, r.role_id
-         FROM tasks t
-         JOIN project_type_task_templates tt ON tt.project_type_id = $2 AND tt.task_title = t.name
-         JOIN project_type_task_template_roles r ON r.task_template_id = tt.id
-        WHERE t.project_id = $1
-       ON CONFLICT DO NOTHING`,
-      [projectId, body.projectTypeId],
-    );
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
     await client.query(
       `INSERT INTO project_members (project_id, user_id, access_level, created_by, updated_by) VALUES ($1, $2, 'edit', $3, $3)`,
       [projectId, body.ownerId, auth.userId],

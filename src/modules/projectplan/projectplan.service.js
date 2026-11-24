@@ -139,11 +139,7 @@ export async function getPlan(db, auth, id) {
     ),
     // each task of the groups: its planned dates, when it started and when it was completed
     db.query(
-<<<<<<< HEAD
-      `SELECT t.id, t.task_group_id, t.task_type_id, tty.name AS task_type_name, t.name, t.status, t.is_continuous, u.name AS assigned_to_name,
-=======
-      `SELECT t.id, t.task_group_id, t.name, t.status, u.name AS assigned_to_name,
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
+      `SELECT t.id, t.task_group_id, t.task_type_id, tty.name AS task_type_name, t.name, t.status, u.name AS assigned_to_name,
               (t.planned_start AT TIME ZONE $2)::date::text AS planned_start,
               (t.planned_end AT TIME ZONE $2)::date::text AS planned_end,
               LEAST((t.actual_start AT TIME ZONE $2)::date, (SELECT min(x.work_date) FROM timesheets x WHERE x.task_id = t.id))::text AS started,
@@ -152,11 +148,7 @@ export async function getPlan(db, auth, id) {
               (SELECT COALESCE(sum(x.minutes), 0)::int FROM timesheets x WHERE x.task_id = t.id) AS logged_minutes,
               COALESCE((SELECT json_agg(json_build_object('date', q.d::text, 'minutes', q.m) ORDER BY q.d)
                           FROM (SELECT x.work_date AS d, sum(x.minutes)::int AS m FROM timesheets x WHERE x.task_id = t.id GROUP BY x.work_date) q), '[]'::json) AS logs
-<<<<<<< HEAD
-         FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to LEFT JOIN task_types tty ON tty.id = t.task_type_id
-=======
-         FROM tasks t LEFT JOIN task_holders h ON h.task_id = t.id LEFT JOIN users u ON u.id = h.user_id
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
+         FROM tasks t LEFT JOIN task_holders h ON h.task_id = t.id LEFT JOIN users u ON u.id = h.user_id LEFT JOIN task_types tty ON tty.id = t.task_type_id
         WHERE t.project_id = $1 AND t.is_active AND t.task_group_id IS NOT NULL
         ORDER BY t.task_group_id, t.display_order NULLS LAST, t.id`,
       [id, safeZone(auth.timeZone)],

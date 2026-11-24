@@ -295,45 +295,4 @@ export const fromPlanSchema = {
   response: { 201: { type: 'object', properties: { created: { type: 'integer' }, skipped: { type: 'integer' }, ids: { type: 'array', items: { type: 'integer' } } } } },
 };
 
-<<<<<<< HEAD
-export const deleteSchema = { tags, summary: 'Delete a task and its subtasks', params: idParams, response: { 204: { type: 'null' } } };
-=======
-export const fromTemplateSchema = {
-  tags,
-  summary: 'Create tasks on a project from picked template tasks',
-  body: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['projectId', 'items'],
-    properties: {
-      projectId: { type: 'integer', minimum: 1 },
-      ownerId: fields.ownerId,
-      assignedTo: { ...fields.assignedTo, description: 'default assignee (each item can override)' },
-      plannedStart: fields.plannedStart,
-      plannedEnd: fields.plannedEnd,
-      items: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 200,
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['templateId'],
-          // per task – each falls back to the common value above
-          properties: {
-            templateId: { type: 'integer', minimum: 1 },
-            ownerId: fields.ownerId,
-            assignedTo: fields.assignedTo,
-            plannedStart: fields.plannedStart,
-            plannedEnd: fields.plannedEnd,
-            estimatedMinutes: fields.estimatedMinutes,
-          },
-        },
-      },
-    },
-  },
-  response: { 201: { type: 'object', properties: { created: { type: 'integer' }, ids: { type: 'array', items: { type: 'integer' } } } } },
-};
-
 export const deleteSchema = { tags, summary: 'Delete a task', params: idParams, response: { 204: { type: 'null' } } };
->>>>>>> 3ea51260a802144b6537da0f3d1d9141600b4276
